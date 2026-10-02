@@ -346,7 +346,7 @@ Then directory entries would have to do the same for symmetry. This requires man
 
 ## Incidental improvements
 
-These are not needed for the rest of the RFC. However, since we're working on the store layer anyway, they are cheap to do at the same time. They also go well together, since dropping the name makes room for the longer store directory.
+These are not needed for the rest of the RFC. However, since we're working on the store layer anyway, they are cheap to do at the same time. The first two also go well together, since dropping the name makes room for the longer store directory.
 
 ### Remove the name from store paths
 
@@ -396,6 +396,20 @@ To migrate an existing path `/nix/store/$old-$name` to `/var/lib/nix/$digest`, t
 `/var/lib/nix/` is 2 characters longer than `/nix/store/`, but the old path also has `-$name`, which is at least 2 characters. So there is always room, and the leftover is filled with `$filler`, a string of length `l = length($name) - 1` of the form `./././/`. That is, repeat `./` `floor(l/2)` times and append `/` if `l` is odd.
 
 Note that Nix scans for references by digest, so the filler doesn't hide any references.
+
+### Provide the Store via FUSE
+
+Instead of a plain directory, the Store daemon can provide the Store as a FUSE filesystem, or something similar like a network filesystem server. The entries are kept in a backing directory that only the daemon accesses.
+
+This brings a few things:
+
+- **Verification on access**: the daemon verifies checksums while files are read, so a corrupted entry is detected when it's used, not when a verification run happens to pass by. The NAR hash covers a whole entry, so this works best with per-file hashes, like the Git method of content addressing that Nix already has (it doesn't support references yet).
+- **Fetching on demand**: when a missing entry is accessed, the daemon fetches it from a binary cache, hanging the I/O request until it's downloaded and verified. Everything is always installed, and installing a profile only means creating the link.
+- **Better deduplication**: the daemon can mask store paths in files in the backing directory, replacing them with a placeholder like Nix already does for self-references. The masked paths are kept separately, for example as a list of file, offset and reference per entry, and put back on read. Files that only differ in the store paths they contain, like a library rebuilt against a new dependency, then become identical on disk and are hard-linked via `.links`.
+
+Note that the Store as seen through the filesystem doesn't change, so `$cas`, `$digest.narinfo` and verification stay the same. The masking is purely a storage detail of the daemon.
+
+The drawbacks are the FUSE overhead, limited FUSE support outside Linux, and that the daemon must run before anything in the Store can be used. Fetching on demand also needs network access at unexpected moments, so it should be configurable per host.
 
 [RFC 62]: https://github.com/NixOS/rfcs/blob/master/rfcs/0062-content-addressed-paths.md
 [building]: https://github.com/NixOS/nix/blob/master/doc/manual/source/store/building.md
