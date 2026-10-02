@@ -16,7 +16,7 @@ related-issues: (will contain links to implementation PRs)
 - query service
 - efficient distribution of build trace entries
 - explain the benefits of late binding and how it improves installs on low-power systems
-- script that migrates an existing `/nix/store` closure to `/var/lib/nix`, see Migration
+- script that migrates an existing `/nix/store` closure to `/var/lib/nix`, see Incidental improvements
 
 ## Summary
 
@@ -40,11 +40,11 @@ These are not part of this RFC, they are mentioned because the rest of the RFC r
 ### What this RFC adds
 
 - Decouple subjective metadata (Trust DB) from the Store, keep it per user, merge it from multiple sources
-- Move the Store to `/var/lib/nix`
 - Store objects provide their objective metadata in-band, next to the entry, so the Store needs no database
 - Store can be shared read-write on a network share, with atomic installation via `rename`
 - `nix-daemon` becomes optional, also for multi-user installs
 - Coordinated garbage collection for shared stores
+- Incidental improvements: drop the name from store paths, and move the Store to `/var/lib/nix`
 
 ### Benefits
 
@@ -55,8 +55,6 @@ By making the Store self-describing, we can:
 - keep subjective metadata per user, from multiple trusted sources
 - detect non-reproducible builds by comparing build trace entries between sources
 - easily switch between single- and multi-user setup
-
-Additionally, this is an opportunity to move the Nix store to a filesystem location supported by most non-NixOS systems, namely `/var/lib/nix`.
 
 By "cleaning up" the filesystem state of Nix, a host of possibilities emerge:
 
@@ -75,7 +73,6 @@ By "cleaning up" the filesystem state of Nix, a host of possibilities emerge:
 There are some small drawbacks:
 
 - Garbage collection is more complex when the store is shared between hosts.
-- Since the store directory is part of every store path digest, the same content gets a different `$cas` under `/var/lib/nix` than under `/nix/store`. Binary caches need to serve both for the transition period.
 - `$cas` entries without metadata are opaque, and might contain malware or illegal content. If nothing references it, there is no problem with the content. Garbage collection takes care of unused entries.
 - A hash collision would allow inserting malware into a widely used `$cas`. This is already possible today, but trusting the hashes may lead to wider cache use. Remedies include using secure hashes, scanning for malware, using multiple hashes and comparing between binary caches, …
 
@@ -86,7 +83,7 @@ Note that Nix already assumes that a floating content-addressed build doesn't le
 We use the Nix concepts, with these shorthands:
 
 - `$drv^out`: a derivation output, meaning a resolved derivation path plus output name. This is the key of a build trace entry.
-- `$cas`: the base name `$digest-$name` of a content-addressed store path, as calculated by Nix.
+- `$cas`: the base name `$digest-$name` of a content-addressed store path, as calculated by Nix (or just `$digest`, see Incidental improvements).
 - `$digest`: the hash part of `$cas`.
 - Trust DB: a build trace plus subjective metadata, per trusted source.
 
@@ -104,26 +101,6 @@ We assume the following process when wanting to install a given package attribut
 Nix already allows a given `$drv^out` to produce different `$cas` entries over time, for example for non-deterministic builds. Each source simply has its own build trace entry.
 
 ## Nix Store
-
-## FHS compatibility
-
-Since we're working on the store layer, we have the opportunity to split up the current `/nix` directory and make it FHS compliant. This makes it easier to use Nixpkgs where creating `/nix` is not possible.
-
-An [informal discussion](https://discourse.nixos.org/t/nix-var-nix-opt-nix-usr-local-nix/7101) concluded that the Store should be located at `/var/lib/nix` for maximum compatibility.
-
-Nix chroot stores already allow a store at another physical location, but they require mount and user namespaces and only work on Linux. Changing the logical store directory is also already possible, but loses the binary caches. This RFC makes `/var/lib/nix` the default instead, so binary caches serve it too.
-
-As for the contents of `/nix/var`, all of it can go elsewhere:
-
-- `/nix/var/log` should go under central or per-user log.
-- `/nix/var/nix`:
-  - `db`: Store database. Objective metadata moves into the Store (see Metadata), subjective metadata into Trust DBs.
-  - `daemon-socket`: Builder service. Should move to appropriate location for service sockets, like `/run`
-  - `gc`: See the Garbage Collection section
-  - `gcroots`, `profiles`: system profiles and roots go under `/var/lib/nix-profiles`. User profiles already live under `$XDG_STATE_HOME/nix/profiles`.
-  - `temproots`, `userpool`: Builder service. Should move to appropriate locations for services, like `/var/tmp` and `/var/lib`
-
-Nix already supports setting these per store, so this is a change of defaults.
 
 ### Contents
 
@@ -179,7 +156,7 @@ Nix keeps the objective metadata in its SQLite database, and binary caches serve
 
 Runtime dependencies are the important case. You can't always detect them based on the contents of the entry, and in order to know which Store entries belong together, they are a necessity. Nix already includes them in the store path digest, so for a given `$cas` there can be only one correct list.
 
-Therefore, every entry comes with a file `/var/lib/nix/$digest.narinfo`, in the `.narinfo` format. It only contains objective fields:
+Therefore, every entry comes with a file `/nix/store/$digest.narinfo`, in the `.narinfo` format. It only contains objective fields:
 
 - `StorePath`
 - `NarHash`
@@ -228,6 +205,8 @@ The installation step only involves moving a proposed path from `.prepare` to `.
 
 For single-user installs, the Store can trivially be maintained by the Nix tools, and converting to multi-user is only a matter of changing the permissions.
 
+Note that the Store only holds content-addressed entries, so input-addressed paths have to be converted or removed first, see Migration.
+
 The Nix local overlay store already allows layering a local store on a shared read-only one. A shared read-write Store goes further, since any host can install into it.
 
 It would even be possible to use FUSE to automatically download any paths that are referenced in the Store, hanging the I/O request while it's being downloaded.
@@ -252,29 +231,29 @@ Atomicity is important to ensure that `$cas` entries are always valid. If they a
 
 #### with Store Daemon
 
-Any user with write access to `/var/lib/nix/.prepare` and `/var/lib/nix/.stage` can ask for entries to be installed. To do so:
+Any user with write access to `/nix/store/.prepare` and `/nix/store/.stage` can ask for entries to be installed. To do so:
 
-1. They prepare entries in `/var/lib/nix/.prepare`, each as `$cas` and `$digest.narinfo`.
-1. They atomically move prepared paths to `/var/lib/nix/.stage`, in reverse dependency order, meaning dependencies of an entry are moved first. First the `$digest.narinfo` file is moved and then the `$cas` entry.
+1. They prepare entries in `/nix/store/.prepare`, each as `$cas` and `$digest.narinfo`.
+1. They atomically move prepared paths to `/nix/store/.stage`, in reverse dependency order, meaning dependencies of an entry are moved first. First the `$digest.narinfo` file is moved and then the `$cas` entry.
 
 When the Store daemon discovers a new `$cas` entry under `.stage`:
 
 1. If the Store already contains this `$cas` entry, it removes this new one, perhaps first verifying the Store copy.
 1. It recursively changes ownership of `$cas` and `$digest.narinfo` to itself and timestamps to 0, making sure that write permission is removed for everybody, and read permission is added for anybody.
-   If it has no permissions to do this, it instead copies the path into `/var/lib/nix/.daemon`, and another process will need to keep `.stage` clean.
+   If it has no permissions to do this, it instead copies the path into `/nix/store/.daemon`, and another process will need to keep `.stage` clean.
 1. The daemon verifies the `$cas`. If it doesn't match, it removes `$cas` and `$digest.narinfo`. Note that a missing or altered `$digest.narinfo` file won't pass validation.
 1. It checks that all references are already present in the Store. If not, the path is held for a while and deleted if the references don't appear in time (configurable).
-1. It atomically moves `$digest.narinfo` into `/var/lib/nix`.
-1. It atomically moves `$cas` into `/var/lib/nix`.
+1. It atomically moves `$digest.narinfo` into `/nix/store`.
+1. It atomically moves `$cas` into `/nix/store`.
 
 Note that to ensure atomicity, `.prepare` and `.stage` need to be on the same filesystem, and either `.stage` or `.daemon` need to be on the same filesystem as the Store.
 
 #### without Store Daemon
 
-Any user with write access to `/var/lib/nix/.stage` and `/var/lib/nix` can install entries. To do so:
+Any user with write access to `/nix/store/.stage` and `/nix/store` can install entries. To do so:
 
-1. They prepare entries in `/var/lib/nix/.stage`, each as `$cas` and `$digest.narinfo`.
-1. They atomically move prepared entries to `/var/lib/nix`, in reverse dependency order, meaning dependencies of an entry are moved first, and `$digest.narinfo` is moved before `$cas`
+1. They prepare entries in `/nix/store/.stage`, each as `$cas` and `$digest.narinfo`.
+1. They atomically move prepared entries to `/nix/store`, in reverse dependency order, meaning dependencies of an entry are moved first, and `$digest.narinfo` is moved before `$cas`
 
 Note that to ensure atomicity, `.stage` needs to be on the same filesystem as the Store.
 
@@ -282,9 +261,9 @@ Note that when two writers are trying to install the same `$cas` or `$digest.nar
 
 ### Verification
 
-A path in the Store is verified like `nix store verify` does for content-addressed paths, but using `$digest.narinfo` instead of the database. If it doesn't match, the path is moved to `/var/lib/nix/.quarantaine`, where a sysadmin has to investigate.
+A path in the Store is verified like `nix store verify` does for content-addressed paths, but using `$digest.narinfo` instead of the database. If it doesn't match, the path is moved to `/nix/store/.quarantaine`, where a sysadmin has to investigate.
 
-Any process with write access to `/var/lib/nix` and `/var/lib/nix/.quarantaine` can do this, for example the Store daemon.
+Any process with write access to `/nix/store` and `/nix/store/.quarantaine` can do this, for example the Store daemon.
 
 ### Garbage collection
 
@@ -303,11 +282,11 @@ Garbage collection needs to identify store paths that are not used by anything o
 - The `$digest.narinfo` files that still don't have their matching `$cas` are removed. Note that when installing, the `$digest.narinfo` will appear shortly before `$cas` since everything is prepared.
 - Finally, the writer host empties the `.gc` directory, leaving the `running_gc` file for last.
 
-For a single-user installation or a non-shared Nix store, none of this is necessary, and the GC process remains unchanged, except for the new locations to search for GC roots.
+For a single-user installation or a non-shared Nix store, none of this is necessary, and the GC process remains unchanged.
 
 ## Profiles
 
-Nix profiles and GC roots stay as they are, see [profiles]. User profiles already live under `$XDG_STATE_HOME/nix/profiles`. System profiles and roots move from `/nix/var/nix` to `/var/lib/nix-profiles`.
+Nix profiles and GC roots stay as they are, see [profiles]. User profiles already live under `$XDG_STATE_HOME/nix/profiles`, system profiles and roots under `/nix/var/nix`.
 
 Since a profile points to an immutable `$cas` path, it is the same across systems and can therefore be part of a network-mounted home directory.
 
@@ -319,18 +298,9 @@ For a shared store, the GC roots of each host are recorded as described in Garba
 
 ### Migration
 
-There is no real need for migrating stores, since `/nix/store` and `/var/lib/nix` can coexist and the tooling either uses one or the other. However, it is convenient to migrate built artifacts for implementing this RFC.
+Nix already converts a closure to content-addressed form with `nix store make-content-addressed`. After that, each entry only needs its `$digest.narinfo`, which can be generated from the Nix Store DB.
 
-Nix already converts a closure to content-addressed form with `nix store make-content-addressed`, but only within the same store directory. Moving to another store directory means rewriting every reference.
-
-To migrate an existing input-addressed path `/nix/store/$old` to `/var/lib/nix/$cas`, the following approach will work most of the time:
-
-- migrate all its dependencies using the below steps
-- replace all strings of the form `/nix/store/$old` with `/var/lib/nix/$cas`, and calculate `$cas` as Nix does for content-addressed paths, with self-references replaced by the sentinel
-- do the same with symlinks, but consider relative paths as well
-- write `$digest.narinfo` and place the entry in `/var/lib/nix/$cas`
-
-Note that `/var/lib/nix` is 2 characters longer than `/nix/store`, while the digest has the same length. To keep binaries patchable in place, the name has to be 2 characters shorter, for example by dropping the version suffix or truncating. This is to be determined.
+Once garbage collection has removed the input-addressed paths, the Store only holds self-validating entries, and the Nix Store DB is no longer needed.
 
 This process will fail if the store object refers to the Store in ways that aren't visible, like different string encoding and calculated paths. Rebuilding with content-addressed derivations avoids this, at the cost of a full rebuild.
 
@@ -357,20 +327,13 @@ As Nix already does with `nix store repair`. Since `$cas` entries need no signat
 
 ## Implementation
 
-- NixPkgs needs to be audited to remove hard-coded `/nix` names, replacing it with the store path variable (TODO look up name).
 - Nix needs a store type that reads objective metadata from `$digest.narinfo` instead of SQLite, and keeps the build trace in per-user Trust DBs. The tools either use the old location and semantics, or the new one.
-- Binary caches already serve `.narinfo` files and build trace entries. They need to serve `/var/lib/nix` paths as well.
+- Binary caches already serve `.narinfo` files and build trace entries.
 - Build trace entries need to be distributed in an incremental way. For example, as a JSON array of added and changed entries since some timestamp.
 
 ## Alternative options
 
 There are a few choices made in this RFC, here we describe alternatives and why they were not picked.
-
-### Keep store at `/nix/store`
-
-The `$cas` entries and `$digest.narinfo` files could stay in `/nix/store`. The benefit would be that NixPkgs doesn't have to be audited for hardcoded `/nix` paths, existing binary caches keep working, and migration doesn't need shorter names.
-
-However, this keeps the problem of some installations not having permission to create a `/nix` directory. Chroot stores work around that, but only on Linux. It also makes it much harder to share the store between hosts (as long as input-addressed entries are present).
 
 ### No metadata
 
@@ -381,9 +344,58 @@ Not keeping metadata in the Store means that the Store by itself doesn't have en
 Since the Store entries can be files or directories, that means that files would have to be put in a directory, for example `$cas` becomes `$cas/_`.
 Then directory entries would have to do the same for symmetry. This requires many code changes and requires extra storage, even if an entry doesn't have any runtime dependencies.
 
+## Incidental improvements
+
+These are not needed for the rest of the RFC. However, since we're working on the store layer anyway, they are cheap to do at the same time. They also go well together, since dropping the name makes room for the longer store directory.
+
 ### Remove the name from store paths
 
-An earlier version of this RFC used only the hash as store path. This makes the store more opaque and requires good tooling for manual management. Nix includes the name in content-addressed store paths, and we follow Nix.
+Store paths become `/nix/store/$digest`, so `$cas` is just `$digest`. The digest is calculated as Nix does, but with an empty name.
+
+The name and version are subjective data: two sources could name identical content differently. They move to the Trust DB, where the rest of the subjective metadata already is.
+
+As a bonus, identical content deduplicates even when it was built under different names, for example `hello` and `hello-2.10`. With the name in the path, those are two entries.
+
+The drawback is that the store becomes more opaque and requires good tooling for manual management. For example, `nix path-info` could show the names from the Trust DB.
+
+### Move the Store to `/var/lib/nix`
+
+This makes the Store FHS compliant, and makes it easier to use Nixpkgs where creating `/nix` is not possible.
+
+An [informal discussion](https://discourse.nixos.org/t/nix-var-nix-opt-nix-usr-local-nix/7101) concluded that the Store should be located at `/var/lib/nix` for maximum compatibility.
+
+Nix chroot stores already allow a store at another physical location, but they require mount and user namespaces and only work on Linux. Changing the logical store directory is also already possible, but loses the binary caches. Here we make `/var/lib/nix` a supported default instead, so binary caches serve it too.
+
+Since the store directory is part of every store path digest, the same content gets a different `$cas` under `/var/lib/nix` than under `/nix/store`. Binary caches need to serve both for the transition period.
+
+A separate location also lets a classic `/nix/store` with input-addressed paths coexist with the Store on the same host, which is convenient while migrating.
+
+As for the contents of `/nix/var`, all of it can go elsewhere:
+
+- `/nix/var/log` should go under central or per-user log.
+- `/nix/var/nix`:
+  - `db`: Store database. Objective metadata moves into the Store (see Metadata), subjective metadata into Trust DBs.
+  - `daemon-socket`: Builder service. Should move to appropriate location for service sockets, like `/run`
+  - `gc`: See the Garbage Collection section
+  - `gcroots`, `profiles`: system profiles and roots go under `/var/lib/nix-profiles`. User profiles already live under `$XDG_STATE_HOME/nix/profiles`.
+  - `temproots`, `userpool`: Builder service. Should move to appropriate locations for services, like `/var/tmp` and `/var/lib`
+
+Nix already supports setting these per store, so this is a change of defaults.
+
+NixPkgs needs to be audited to remove hard-coded `/nix` names, replacing it with the store path variable (TODO look up name).
+
+#### Migration
+
+To migrate an existing path `/nix/store/$old-$name` to `/var/lib/nix/$digest`, the following approach will work most of the time:
+
+- migrate all its references using the below steps
+- calculate the new `$digest` as described above, but replace all strings of the form `/nix/store/$old-$name` with `/var/lib/nix/$filler$digest`
+- do the same with symlinks, but consider relative paths as well
+- write `$digest.narinfo` and place the entry in `/var/lib/nix/$digest`
+
+`/var/lib/nix/` is 2 characters longer than `/nix/store/`, but the old path also has `-$name`, which is at least 2 characters. So there is always room, and the leftover is filled with `$filler`, a string of length `l = length($name) - 1` of the form `./././/`. That is, repeat `./` `floor(l/2)` times and append `/` if `l` is odd.
+
+Note that Nix scans for references by digest, so the filler doesn't hide any references.
 
 [RFC 62]: https://github.com/NixOS/rfcs/blob/master/rfcs/0062-content-addressed-paths.md
 [building]: https://github.com/NixOS/nix/blob/master/doc/manual/source/store/building.md
