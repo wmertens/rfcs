@@ -75,8 +75,11 @@ There are some small drawbacks:
 - Garbage collection is more complex when the store is shared between hosts.
 - `$cas` entries without metadata are opaque, and might contain malware or illegal content. If nothing references it, there is no problem with the content. Garbage collection takes care of unused entries.
 - A hash collision would allow inserting malware into a widely used `$cas`. This is already possible today, but trusting the hashes may lead to wider cache use. Remedies include using secure hashes, scanning for malware, using multiple hashes and comparing between binary caches, …
+- Hidden self-references break content-addressed builds. When an output contains its own scratch path in a form that Nix can't find, like a compressed man page, a JAR or a signed binary, the rewrite misses it. The finished entry then points to a path that doesn't exist, and a different derivation building the same content gets a different `$cas`. This is already the case for Nix's content-addressed derivations. Such leaks are detected by building twice with different scratch paths, and fixed with rewriters in the build, for example with Nix's IPC builder protocol (`builder-rpc-v0`, in development), where the builder can unpack, rewrite and repack such files itself. References to dependencies don't have this problem, since the build already sees their final `$cas`.
 
-Note that Nix already assumes that a floating content-addressed build doesn't leak its scratch path into the output, and already signs build trace entries against malicious mappings. This RFC doesn't change that.
+Note that we don't add a fallback, like a symlink from the scratch path to the `$cas`. Such a symlink can't be validated from its contents, and it would hide the bug instead of getting it fixed.
+
+Note that Nix already signs build trace entries against malicious mappings. This RFC doesn't change that.
 
 ### Terminology
 
