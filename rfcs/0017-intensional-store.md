@@ -16,6 +16,7 @@ related-issues: (will contain links to implementation PRs)
 - query service
 - efficient distribution of build trace entries
 - script that migrates an existing `/nix/store` closure to `/var/lib/nix`, see Incidental improvements
+- quantify the savings on a Hydra-sized store, from early cutoff and from FUSE path masking
 
 ## Summary
 
@@ -43,7 +44,8 @@ These are not part of this RFC, they are mentioned because the rest of the RFC r
 - Store can be shared read-write on a network share, with atomic additions via `rename`
 - `nix-daemon` becomes optional, also for multi-user installs
 - Coordinated garbage collection for shared stores
-- Incidental improvements: drop the name from store paths, and move the Store to `/var/lib/nix`
+- Tooling to query the Trust DBs instead of the Store
+- Incidental improvements: drop the name from store paths, move the Store to `/var/lib/nix`, provide the Store via FUSE, and make the Store non-listable
 
 ### Motivation
 
@@ -72,7 +74,7 @@ By "cleaning up" the filesystem state of Nix, a host of possibilities emerge:
 - Cross-compiling can generate `$cas` entries that are reused for native compiles via the build trace. This is useful on low-resource platforms.
 - The Nix store doesn't require any support or metadata. On embedded systems, all management of the store can be performed outside the system.
 - References to `$cas` entries, such as profiles, are no longer tied to a single system.
-- A FUSE filesystem could auto-fetch `$cas` entries as they are referenced, hanging the I/O until the entry is downloaded and verified.
+- A FUSE filesystem could auto-fetch `$cas` entries as they are referenced, hanging the I/O until the entry is downloaded and verified, see Incidental improvements.
 - You can copy a store from some other install, and immediately use profiles without having their metadata.
 - Different Nix tooling and metadata implementations can use the same store
 
@@ -234,7 +236,7 @@ Note that the Store only holds content-addressed entries, so input-addressed pat
 
 The Nix local overlay store already allows layering a local store on a shared read-only one. A shared read-write Store goes further, since any host can add entries to it.
 
-It would even be possible to use FUSE to automatically download any paths that are referenced in the Store, hanging the I/O request while it's being downloaded.
+It would even be possible to use FUSE to automatically download any paths that are referenced in the Store, see Incidental improvements.
 
 ### Store Daemon
 
@@ -495,7 +497,7 @@ The drawback is that tab completion of store paths and `ls /nix/store/*tool*` st
 
 ### Late binding
 
-Many rebuilds only change the store paths of dependencies inside an entry. If entries referred to their dependencies by name, and a wrapper or loader configuration bound those names to store paths at runtime, more rebuilds would produce the same `$cas`. Early cutoff would then stop a lot more rebuilds, for example after a small change to openssl or bash. This is also what makes installs fast on low-power systems.
+Many rebuilds only change the store paths of dependencies inside an entry. If entries referred to their dependencies by name, and a wrapper or loader configuration bound those names to store paths at runtime, more rebuilds would produce the same `$cas`. Early cutoff would then stop a lot more rebuilds, for example after a small change to openssl or bash. This also helps installs on low-power systems, since fewer entries need building or downloading.
 
 This touches the dynamic loader, `makeWrapper`, runpaths and interpreter paths, so it needs its own RFC. Providing the Store via FUSE already gets the disk space savings, see Incidental improvements.
 
