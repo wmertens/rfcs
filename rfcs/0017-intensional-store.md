@@ -46,6 +46,16 @@ These are not part of this RFC, they are mentioned because the rest of the RFC r
 - Coordinated garbage collection for shared stores
 - Incidental improvements: drop the name from store paths, and move the Store to `/var/lib/nix`
 
+### Motivation
+
+Nix's content-addressed derivations already give early cutoff: when a rebuilt dependency turns out to be identical, its dependents don't need rebuilding. However, they don't change how the store itself is managed:
+
+- The store can't be used without its SQLite database, so it can't be shared between hosts, and copying a store means copying its database too.
+- The build trace is per store. Adding a substituter or another source of build trace entries affects every user of the store, so only trusted users can do it.
+- Adding entries to a multi-user store requires talking to the Nix daemon.
+
+This RFC makes the filesystem the store database, keeps trust per user in a Trust DB, and lets any host add entries to a shared Store with just a `rename`. It is a small step on top of content-addressed derivations, and most of the store layer code carries over, see Implementation.
+
 ### Benefits
 
 By making the Store self-describing, we can:
