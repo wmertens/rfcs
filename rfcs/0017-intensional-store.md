@@ -41,7 +41,7 @@ These are not part of this RFC, they are mentioned because the rest of the RFC r
 
 - Decouple subjective metadata (Trust DB) from the Store, keep it per user, merge it from multiple sources
 - Store objects provide their objective metadata in-band, next to the entry, so the Store needs no database
-- Store can be shared read-write on a network share, with atomic installation via `rename`
+- Store can be shared read-write on a network share, with atomic additions via `rename`
 - `nix-daemon` becomes optional, also for multi-user installs
 - Coordinated garbage collection for shared stores
 - Incidental improvements: drop the name from store paths, and move the Store to `/var/lib/nix`
@@ -72,7 +72,7 @@ By "cleaning up" the filesystem state of Nix, a host of possibilities emerge:
 - Cross-compiling can generate `$cas` entries that are reused for native compiles via the build trace. This is useful on low-resource platforms.
 - The Nix store doesn't require any support or metadata. On embedded systems, all management of the store can be performed outside the system.
 - References to `$cas` entries, such as profiles, are no longer tied to a single system.
-- A FUSE filesystem could auto-install `$cas` entries as they are referenced, hanging the I/O until the entry is downloaded and verified.
+- A FUSE filesystem could auto-fetch `$cas` entries as they are referenced, hanging the I/O until the entry is downloaded and verified.
 - You can copy a store from some other install, and immediately use profiles without having their metadata.
 - Different Nix tooling and metadata implementations can use the same store
 
@@ -100,13 +100,13 @@ We use the Nix concepts, with these shorthands:
 - `$digest`: the hash part of `$cas`.
 - Trust DB: a build trace plus subjective metadata, per trusted source.
 
-We assume the following process when wanting to install a given package attribute `$attr`:
+We assume the following process when wanting to realise a given package attribute `$attr`:
 
 - Nix evaluates the desired expressions and determines that a certain derivation output `$drv^out` is required
 - `$drv` is [resolved][resolution], which itself looks up build trace entries of its inputs.
 - `$drv^out` is looked up in the Trust DB, to possibly yield `$cas`.
 - If `$cas` is known:
-  - If `$cas` is present in the store, `$attr` is already installed; Done.
+  - If `$cas` is present in the store, `$attr` is already realised; Done.
   - If `$cas` is present on a binary cache, it is downloaded to the store, without need for a signature; Done.
 - `$drv^out` is built using the normal mechanisms for floating content-addressed outputs.
 - The resulting build trace entry and subjective metadata are stored in the Trust DB; Done.
@@ -117,7 +117,7 @@ Nix already allows a given `$drv^out` to produce different `$cas` entries over t
 
 ### Contents
 
-The Store should be verifiable, and only contain verifiable paths. However, to allow atomic installation over the network, there should be a directory for staging an installation. Some other operations also need supporting directories.
+The Store should be verifiable, and only contain verifiable paths. However, to allow atomic additions over the network, there should be a directory for staging an addition. Some other operations also need supporting directories.
 
 For cosmetics and wildcard expansion, we hide supporting directories from regular view.
 
@@ -127,7 +127,7 @@ Therefore, these are the Store contents, all part of the same mount point to ens
 - `$digest.narinfo`: the objective metadata of `$cas`, see Metadata
 - `.prepare`: this directory can be used by anyone to prepare a store object before adding it to the Store, by picking a non-conflicting subpath
 - `.stage`: after preparing, the store object is moved here
-- `.daemon`: if there is a store daemon, it might use this path to prepare installation
+- `.daemon`: if there is a store daemon, it might use this path to prepare additions
 - `.quarantaine`: whenever a non-compliant path is encountered, it is moved here
 - `.links`: used to hard-link identical store files, as Nix already does
 - `.gc`: used for garbage collection, holding the GC roots of each host and the entries being removed
@@ -199,7 +199,7 @@ The Trust DB contains the build trace entries of a source, plus subjective metad
   - builder
   - custom metadata, like one or more git repo commit hashes
 
-With this information, a user can quickly find `$cas` entries to install that match a name or description. `nix-build` can find a `$cas` by `$drv^out`.
+With this information, a user can quickly find `$cas` entries to realise that match a name or description. `nix-build` can find a `$cas` by `$drv^out`.
 
 Nix currently keeps the build trace in the store database, per store. Here we keep it per user and per source instead. For a given `$drv^out`, there can be many entries, one for each trusted source. This can be handled by having one SQLite DB per source (including localhost), and having an order of precedence.
 
@@ -214,19 +214,19 @@ Since the Nix Store (minus supporting directories) contains only self-validating
 - confidence around hash collision attacks
 - confidence around writers corrupting paths without detection
 
-The installation step only involves moving a proposed path from `.prepare` to `.stage`, so no further communication is necessary with the Store daemon.
+Adding an entry only involves moving a proposed path from `.prepare` to `.stage`, so no further communication is necessary with the Store daemon.
 
 For single-user installs, the Store can trivially be maintained by the Nix tools, and converting to multi-user is only a matter of changing the permissions.
 
 Note that the Store only holds content-addressed entries, so input-addressed paths have to be converted or removed first, see Migration.
 
-The Nix local overlay store already allows layering a local store on a shared read-only one. A shared read-write Store goes further, since any host can install into it.
+The Nix local overlay store already allows layering a local store on a shared read-only one. A shared read-write Store goes further, since any host can add entries to it.
 
 It would even be possible to use FUSE to automatically download any paths that are referenced in the Store, hanging the I/O request while it's being downloaded.
 
 ### Store Daemon
 
-Optionally, a daemon can maintain the Store. In this case, it is recommended be the only user with write access. It performs installations, verifications and garbage collection, described below.
+Optionally, a daemon can maintain the Store. In this case, it is recommended be the only user with write access. It performs additions, verifications and garbage collection, described below.
 
 ### Preparing
 
@@ -236,15 +236,15 @@ After preparing, Nix writes `$digest.narinfo` next to the entry, and adds the bu
 
 Store objects can also come from elsewhere, for example `nix store add` or a substitution. They follow the same steps.
 
-### Installation
+### Adding entries
 
-We use rename semantics to provide atomic installations. Prepared `$cas` entries are moved to their final location with a `rename` call, which is atomic but requires the path to be on the same filesystem.
+We use rename semantics to provide atomic additions. Prepared `$cas` entries are moved to their final location with a `rename` call, which is atomic but requires the path to be on the same filesystem.
 
 Atomicity is important to ensure that `$cas` entries are always valid. If they are copied instead, they don't self-validate for the duration of the copy.
 
 #### with Store Daemon
 
-Any user with write access to `/nix/store/.prepare` and `/nix/store/.stage` can ask for entries to be installed. To do so:
+Any user with write access to `/nix/store/.prepare` and `/nix/store/.stage` can ask for entries to be added. To do so:
 
 1. They prepare entries in `/nix/store/.prepare`, each as `$cas` and `$digest.narinfo`.
 1. They atomically move prepared paths to `/nix/store/.stage`, in reverse dependency order, meaning dependencies of an entry are moved first. First the `$digest.narinfo` file is moved and then the `$cas` entry.
@@ -263,14 +263,14 @@ Note that to ensure atomicity, `.prepare` and `.stage` need to be on the same fi
 
 #### without Store Daemon
 
-Any user with write access to `/nix/store/.stage` and `/nix/store` can install entries. To do so:
+Any user with write access to `/nix/store/.stage` and `/nix/store` can add entries. To do so:
 
 1. They prepare entries in `/nix/store/.stage`, each as `$cas` and `$digest.narinfo`.
 1. They atomically move prepared entries to `/nix/store`, in reverse dependency order, meaning dependencies of an entry are moved first, and `$digest.narinfo` is moved before `$cas`
 
 Note that to ensure atomicity, `.stage` needs to be on the same filesystem as the Store.
 
-Note that when two writers are trying to install the same `$cas` or `$digest.narinfo`, one of them might get an error, but the end result will be the same (as long as the `$cas` is self-valid). So multiple writers can also be on separate hosts, in a trusted setting.
+Note that when two writers are trying to add the same `$cas` or `$digest.narinfo`, one of them might get an error, but the end result will be the same (as long as the `$cas` is self-valid). So multiple writers can also be on separate hosts, in a trusted setting.
 
 ### Verification
 
@@ -304,7 +304,7 @@ Any host with write access can then collect garbage:
 1. It atomically moves each listed `$cas` that is not in a closure to `.gc/trash`, together with its `$digest.narinfo`.
 1. It waits for a grace period, for example an hour.
 1. It reads the roots again. Trashed entries that became reachable are moved back, first `$digest.narinfo` and then `$cas`.
-1. It deletes the rest of `.gc/trash`, and removes `$digest.narinfo` files in the Store that are older than the grace period and have no matching `$cas`. Note that when installing, the `$digest.narinfo` appears shortly before `$cas`.
+1. It deletes the rest of `.gc/trash`, and removes `$digest.narinfo` files in the Store that are older than the grace period and have no matching `$cas`. Note that when adding, the `$digest.narinfo` appears shortly before `$cas`.
 1. It removes `.gc/lock`.
 
 A host that needs an entry during the grace period can move it back from `.gc/trash` itself, after adding it to its roots.
@@ -346,7 +346,7 @@ To begin managing an existing Store with a Store Daemon, these steps are perform
 
 ### Removing a Store Daemon
 
-- Wait for pending installs to complete.
+- Wait for pending additions to complete.
 - Stop Store Daemon.
 - Change permissions on the Store as desired.
 
