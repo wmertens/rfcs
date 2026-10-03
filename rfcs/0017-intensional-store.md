@@ -72,7 +72,7 @@ By "cleaning up" the filesystem state of Nix, a host of possibilities emerge:
 
 There are some small drawbacks:
 
-- Garbage collection is more complex when the store is shared between hosts.
+- Garbage collection is more complex when the store is shared between hosts. Also, a host or user could root huge amounts of data. Quotas per host and per user are left for later.
 - `$cas` entries without metadata are opaque, and might contain malware or illegal content. If nothing references it, there is no problem with the content. Garbage collection takes care of unused entries.
 - A hash collision would allow inserting malware into a widely used `$cas`. This is already possible today, but trusting the hashes may lead to wider cache use. Remedies include using secure hashes, scanning for malware, using multiple hashes and comparing between binary caches, …
 - Hidden self-references break content-addressed builds. When an output contains its own scratch path in a form that Nix can't find, like a compressed man page, a JAR or a signed binary, the rewrite misses it. The finished entry then points to a path that doesn't exist, and a different derivation building the same content gets a different `$cas`. This is already the case for Nix's content-addressed derivations. Such leaks are detected by building twice with different scratch paths, and fixed with rewriters in the build, for example with Nix's IPC builder protocol (`builder-rpc-v0`, in development), where the builder can unpack, rewrite and repack such files itself. References to dependencies don't have this problem, since the build already sees their final `$cas`.
@@ -120,7 +120,7 @@ Therefore, these are the Store contents, all part of the same mount point to ens
 - `.daemon`: if there is a store daemon, it might use this path to prepare installation
 - `.quarantaine`: whenever a non-compliant path is encountered, it is moved here
 - `.links`: used to hard-link identical store files, as Nix already does
-- `.gc`: used to communicate about garbage collection
+- `.gc`: used for garbage collection, holding the GC roots of each host and the entries being removed
 - anything else doesn't belong in the Store and should be removed
 
 The timestamps of files/directories are kept 0, and the user and group ownership are recommended to be a single user, for example `root:root` or `store:store`.
@@ -270,20 +270,36 @@ Any process with write access to `/nix/store` and `/nix/store/.quarantaine` can 
 
 ### Garbage collection
 
-Garbage collection needs to identify store paths that are not used by anything on any of the systems sharing the same store. Here we propose a simple mechanism for coordination, but any mechanism is acceptable.
+Garbage collection needs to identify store paths that are not used by anything on any of the systems sharing the same store. Instead of coordinating each run between hosts, every host keeps its GC roots up to date in the Store itself, and a collector only needs to read them.
 
-- A host with store write access decides to run garbage collection.
-- It checks that `.gc/running_gc` does not exist or contains a very old timestamp, and writes a unique number to `.gc/will_gc`.
-- After waiting long enough to prevent collisions (for example 10 seconds), it reads `.gc/will_gc` and verifies it contains the unique number it wrote.
-- It clears out `.gc/` except for the file `.gc/will_gc` and adds the file `.gc/running_gc` containing the current timestamp.
-- While it waits for other hosts, it checks the Store for `$digest.narinfo` files that don't have a matching `$cas`.
-- Each host's store daemon monitors `.gc/running_gc` at some interval, for example 1 minute.
-- While this file exists, the daemon must record its root `$cas` entries, by creating 0-length files named `.gc/$cas`.
-- The writer waits long enough for all the hosts to record their GC roots, for example 10 minutes.
-- It verifies that `.gc/will_gc` still contains its unique number
-- After the wait period expired, the writer host scans for store paths that are not part of the own and other GC roots. Each `$cas` is atomically moved to `.gc` and deleted; `$digest.narinfo` is also deleted.
-- The `$digest.narinfo` files that still don't have their matching `$cas` are removed. Note that when installing, the `$digest.narinfo` will appear shortly before `$cas` since everything is prepared.
-- Finally, the writer host empties the `.gc` directory, leaving the `running_gc` file for last.
+`.gc` contains:
+
+- `hosts/$host/roots/`: the root `$cas` entries of `$host`, as 0-length files named `$cas`. The host updates them whenever its roots change, for example after switching or pruning a profile.
+- `hosts/$host/temp/$build/`: the temporary roots of a running build or substitution on `$host`, in the same format.
+- `hosts/$host/alive`: touched by the host periodically, for example every hour.
+- `trash/`: entries that are being removed.
+- `lock`: held by a running collector, containing a timestamp.
+
+Each host follows these rules:
+
+- Before staging an entry, or before relying on an entry that is already present, it adds that entry to its temporary roots. This also covers builds that take days, since their inputs stay rooted until the build ends.
+- When the build or substitution is done, its results are part of the regular roots, and the temporary roots are removed.
+- It prunes its own profiles, like `nix-collect-garbage --delete-older-than` does today, and then updates its roots.
+
+Any host with write access can then collect garbage:
+
+1. It creates `.gc/lock`. If the lock already exists and is recent (for example less than a day old), another collector is running and it stops.
+1. It lists the Store entries.
+1. It reads the roots of all hosts and calculates their closures, using the references in `$digest.narinfo`.
+1. It atomically moves each listed `$cas` that is not in a closure to `.gc/trash`, together with its `$digest.narinfo`.
+1. It waits for a grace period, for example an hour.
+1. It reads the roots again. Trashed entries that became reachable are moved back, first `$digest.narinfo` and then `$cas`.
+1. It deletes the rest of `.gc/trash`, and removes `$digest.narinfo` files in the Store that are older than the grace period and have no matching `$cas`. Note that when installing, the `$digest.narinfo` appears shortly before `$cas`.
+1. It removes `.gc/lock`.
+
+A host that needs an entry during the grace period can move it back from `.gc/trash` itself, after adding it to its roots.
+
+A host whose `alive` file is older than a configurable time, for example a week, is considered gone, and its directory is removed. When it comes back, it records its roots again and fetches any missing entries. Note that a host that can't reach the Store can't add entries either, so a network split only delays collection.
 
 For a single-user installation or a non-shared Nix store, none of this is necessary, and the GC process remains unchanged.
 
