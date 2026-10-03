@@ -207,7 +207,15 @@ Note that the build-time dependencies don't need storing: `$drv` is resolved, so
 
 Nix currently keeps the build trace in the store database, per store. Here we keep it per user and per source instead. For a given `$drv^out`, there can be many entries, one for each trusted source. This can be handled by having one SQLite DB per source (including localhost), and having an order of precedence.
 
-Note that Nix doesn't garbage collect the build trace yet. Per-source Trust DBs make that a per-user policy decision.
+A source can be a service that answers lookups, like a binary cache serving build trace entries, or a static mapping, like a downloaded SQLite file.
+
+#### Maintenance
+
+Nix doesn't garbage collect the build trace yet. With per-source Trust DBs, this becomes simple:
+
+- The DBs of remote sources are caches. Their entries can be dropped at any time, or the whole DB can be replaced by a newer download.
+- The localhost DB keeps the entries whose `$cas` is present in the Store, plus the entries of recent builds, for example of the last month.
+- The collector can't write to the Trust DBs of other users. Instead, each user's Trust DB is cleaned up the next time that user runs Nix, by dropping entries whose `$cas` is gone.
 
 ### Sharing the Nix Store
 
