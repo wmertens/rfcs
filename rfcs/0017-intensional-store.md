@@ -340,6 +340,15 @@ However, a profile link itself is trusted information, and should be shared betw
 
 For a shared store, the GC roots of each host are recorded as described in Garbage collection.
 
+## Tooling
+
+Without a store database, querying happens through the Trust DBs. Listing the Store was always a hack to query it, so the tools need to make this smooth:
+
+- A query tool, for example `nix show tool`, lists the known entries matching a name or description from the Trust DBs, with their metadata, and highlights the ones present in the Store. Unlike `nix search`, which searches expressions, this searches what was built or is known to a source.
+- `nix path-info` and `nix log` show the names from the Trust DB next to store paths.
+- Each user can add, remove and order the sources of their Trust DB.
+- `nix store verify`, `nix store repair` and garbage collection work on the Store as described above.
+
 ## Administration Tasks
 
 ### Migration
