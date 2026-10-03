@@ -356,7 +356,9 @@ As Nix already does with `nix store repair`. Since `$cas` entries need no signat
 
 ## Implementation
 
-- Nix needs a store type that reads objective metadata from `$digest.narinfo` instead of SQLite, and keeps the build trace in per-user Trust DBs. The tools either use the old location and semantics, or the new one.
+- Nix needs a store type that reads objective metadata from `$digest.narinfo` instead of SQLite, and keeps the build trace in per-user Trust DBs. It is a new store type next to the existing ones, not a replacement. Nix's local store keeps mixing input-addressed and content-addressed paths as it does today, only this Store holds content-addressed entries exclusively.
+- The Store directory is close to Nix's local binary cache store (`file://`), but with unpacked entries instead of compressed NARs. So most of the store layer code carries over: path calculation, `.narinfo` parsing, verification and substitution.
+- Hosts can switch over one at a time: a host uses either its classic store or the Store, and `nix copy` moves closures between them.
 - Binary caches already serve `.narinfo` files and build trace entries.
 - Build trace entries need to be distributed in an incremental way. For example, as a JSON array of added and changed entries since some timestamp.
 
