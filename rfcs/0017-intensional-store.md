@@ -183,7 +183,9 @@ The file validates itself: the store path is calculated from `CA`, `References`,
 
 Note that this makes the Store directory look a lot like a binary cache, minus the compression. This is on purpose.
 
-Other objective metadata that could be useful, such as late binding information, could be added as extra fields. This is to be determined.
+The format is simple `Key: Value` lines, so shell tools can read it too. Nix's parser ignores keys it doesn't know, so other objective metadata, such as late binding information, can be added as extra fields later. This is to be determined. Note that Nix's parser currently requires `URL`, so the new store type has to parse these files without it.
+
+When adding an entry, `$digest.narinfo` is moved into the Store before `$cas`, so a present `$cas` always has its metadata. Garbage collection removes leftover `$digest.narinfo` files.
 
 ### Trust DB
 
