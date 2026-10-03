@@ -15,7 +15,6 @@ related-issues: (will contain links to implementation PRs)
 - flesh out Trust DB locations and updating/querying/merging multiple
 - query service
 - efficient distribution of build trace entries
-- explain the benefits of late binding and how it improves installs on low-power systems
 - script that migrates an existing `/nix/store` closure to `/var/lib/nix`, see Incidental improvements
 
 ## Summary
@@ -491,6 +490,14 @@ Note that this is not access control: digests are public in binary caches and bu
 Garbage collection, verification and the Store daemon need to list the Store, so they run as the owner. For single-user installs the owner is the user, so nothing changes there.
 
 The drawback is that tab completion of store paths and `ls /nix/store/*tool*` stop working. Instead, a tool like `nix show tool` can list the known entries from the Trust DB and highlight the ones that are present.
+
+## Future work
+
+### Late binding
+
+Many rebuilds only change the store paths of dependencies inside an entry. If entries referred to their dependencies by name, and a wrapper or loader configuration bound those names to store paths at runtime, more rebuilds would produce the same `$cas`. Early cutoff would then stop a lot more rebuilds, for example after a small change to openssl or bash. This is also what makes installs fast on low-power systems.
+
+This touches the dynamic loader, `makeWrapper`, runpaths and interpreter paths, so it needs its own RFC. Providing the Store via FUSE already gets the disk space savings, see Incidental improvements.
 
 [RFC 62]: https://github.com/NixOS/rfcs/blob/master/rfcs/0062-content-addressed-paths.md
 [building]: https://github.com/NixOS/nix/blob/master/doc/manual/source/store/building.md
