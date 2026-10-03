@@ -411,6 +411,18 @@ Note that the Store as seen through the filesystem doesn't change, so `$cas`, `$
 
 The drawbacks are the FUSE overhead, limited FUSE support outside Linux, and that the daemon must run before anything in the Store can be used. Fetching on demand also needs network access at unexpected moments, so it should be configurable per host.
 
+### Make the Store non-listable
+
+The Store directory gets mode `dr-x--x--x`, so only its owner can list it. Everybody else can still access entries, but only if they know the path.
+
+This way, nobody can casually enumerate what is installed on a host, or on a shared Store, what the other hosts have installed. The paths you need come from your own Trust DB and profiles anyway.
+
+Note that this is not access control: digests are public in binary caches and build traces, so anyone who knows what to look for can still check if an entry is present.
+
+Garbage collection, verification and the Store daemon need to list the Store, so they run as the owner. For single-user installs the owner is the user, so nothing changes there.
+
+The drawback is that tab completion of store paths and `ls /nix/store/*tool*` stop working. Instead, a tool like `nix show tool` can list the known entries from the Trust DB and highlight the ones that are present.
+
 [RFC 62]: https://github.com/NixOS/rfcs/blob/master/rfcs/0062-content-addressed-paths.md
 [building]: https://github.com/NixOS/nix/blob/master/doc/manual/source/store/building.md
 [store path calculation]: https://github.com/NixOS/nix/blob/master/doc/manual/source/protocols/store-path.md
