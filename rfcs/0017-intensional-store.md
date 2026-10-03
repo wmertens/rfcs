@@ -123,7 +123,7 @@ Therefore, these are the Store contents, all part of the same mount point to ens
 - `.gc`: used for garbage collection, holding the GC roots of each host and the entries being removed
 - anything else doesn't belong in the Store and should be removed
 
-The timestamps of files/directories are kept 0, and the user and group ownership are recommended to be a single user, for example `root:root` or `store:store`.
+The timestamps of files/directories are kept at 1, as Nix does, and the user and group ownership are recommended to be a single user, for example `root:root` or `store:store`.
 Note that for a shared store, two systems might see different ownership values; this is acceptable.
 
 ### Metadata
@@ -242,7 +242,7 @@ Any user with write access to `/nix/store/.prepare` and `/nix/store/.stage` can 
 When the Store daemon discovers a new `$cas` entry under `.stage`:
 
 1. If the Store already contains this `$cas` entry, it removes this new one, perhaps first verifying the Store copy.
-1. It recursively changes ownership of `$cas` and `$digest.narinfo` to itself and timestamps to 0, making sure that write permission is removed for everybody, and read permission is added for anybody.
+1. It recursively changes ownership of `$cas` and `$digest.narinfo` to itself and timestamps to 1, making sure that write permission is removed for everybody, and read permission is added for anybody.
    If it has no permissions to do this, it instead copies the path into `/nix/store/.daemon`, and another process will need to keep `.stage` clean.
 1. The daemon verifies the `$cas`. If it doesn't match, it removes `$cas` and `$digest.narinfo`. Note that a missing or altered `$digest.narinfo` file won't pass validation.
 1. It checks that all references are already present in the Store. If not, the path is held for a while and deleted if the references don't appear in time (configurable).
