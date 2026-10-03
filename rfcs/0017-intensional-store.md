@@ -63,6 +63,7 @@ By making the Store self-describing, we can:
 - make the Nix store network-writeable and world-shareable
 - verify store paths without access to the Nix Store DB
 - keep subjective metadata per user, from multiple trusted sources
+- let an untrusted user add their own substituter or build trace source, without affecting anyone else
 - detect non-reproducible builds by comparing build trace entries between sources
 - easily switch between single- and multi-user setup
 
