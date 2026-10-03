@@ -273,6 +273,10 @@ When the Store daemon discovers a new `$cas` entry under `.stage`:
 
 Note that to ensure atomicity, `.prepare` and `.stage` need to be on the same filesystem, and either `.stage` or `.daemon` need to be on the same filesystem as the Store.
 
+The daemon discovers new entries by watching `.stage`, so no communication is needed. This works from containers and from other hosts, and watching is cheap with inotify on the file server. Where inotify doesn't work, for example on an NFS client, the daemon polls instead.
+
+Optionally, the same code is available as a helper that a user calls to process their prepared entry right away, for example as a setuid executable. This is just a fast path; without it, the daemon picks up the entry anyway.
+
 #### without Store Daemon
 
 Any user with write access to `/nix/store/.stage` and `/nix/store` can add entries. To do so:
