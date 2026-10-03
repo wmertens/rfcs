@@ -392,6 +392,12 @@ Not keeping metadata in the Store means that the Store by itself doesn't have en
 Since the Store entries can be files or directories, that means that files would have to be put in a directory, for example `$cas` becomes `$cas/_`.
 Then directory entries would have to do the same for symmetry. This requires many code changes and requires extra storage, even if an entry doesn't have any runtime dependencies.
 
+### Store entries in subdirectories
+
+The entries could be spread over subdirectories, for example `/nix/store/ab/$cas`, to speed up listing the Store.
+
+However, modern filesystems handle large directories fine, and subdirectories mean more fragmentation, so listing doesn't get much faster. It also breaks every script that constructs store paths. Listing the Store is a hack to query it anyway, it's better to query the Trust DB.
+
 ## Incidental improvements
 
 These are not needed for the rest of the RFC. However, since we're working on the store layer anyway, they are cheap to do at the same time. The first two also go well together, since dropping the name makes room for the longer store directory.
