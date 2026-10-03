@@ -203,6 +203,8 @@ The Trust DB contains the build trace entries of a source, plus subjective metad
 
 With this information, a user can quickly find `$cas` entries to realise that match a name or description. `nix-build` can find a `$cas` by `$drv^out`.
 
+Note that the build-time dependencies don't need storing: `$drv` is resolved, so it already lists its inputs as store paths.
+
 Nix currently keeps the build trace in the store database, per store. Here we keep it per user and per source instead. For a given `$drv^out`, there can be many entries, one for each trusted source. This can be handled by having one SQLite DB per source (including localhost), and having an order of precedence.
 
 Note that Nix doesn't garbage collect the build trace yet. Per-source Trust DBs make that a per-user policy decision.
