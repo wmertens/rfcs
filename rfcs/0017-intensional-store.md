@@ -438,6 +438,10 @@ This brings a few things:
 - **Fetching on demand**: when a missing entry is accessed, the daemon fetches it from a binary cache, hanging the I/O request until it's downloaded and verified. Everything is always installed, and installing a profile only means creating the link.
 - **Better deduplication**: the daemon can mask store paths in files in the backing directory, replacing them with a placeholder like Nix already does for self-references. The masked paths are kept separately, for example as a list of file, offset and reference per entry, and put back on read. Files that only differ in the store paths they contain, like a library rebuilt against a new dependency, then become identical on disk and are hard-linked via `.links`.
 
+The backing directory could also be something else entirely, for example a [git repository that splits out references](https://gist.github.com/wmertens/eceebe0fc05461ebdc8fb106d90a6871), or casync.
+
+The savings can be large. In informal measurements on a laptop store (by jameysharp, in the discussion of this RFC in March 2020), 52% of 3,211 store paths had duplicates when ignoring the store paths they contain, and making ELF runpaths constant would shrink 3.9GB of binaries to 2.4GB. This still needs quantifying on a Hydra-sized store.
+
 Note that the Store as seen through the filesystem doesn't change, so `$cas`, `$digest.narinfo` and verification stay the same. The masking is purely a storage detail of the daemon.
 
 The drawbacks are the FUSE overhead, limited FUSE support outside Linux, and that the daemon must run before anything in the Store can be used. Fetching on demand also needs network access at unexpected moments, so it should be configurable per host.
