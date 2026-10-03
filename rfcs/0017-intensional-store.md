@@ -417,9 +417,11 @@ Store paths become `/nix/store/$digest`, so `$cas` is just `$digest`. The digest
 
 The name and version are subjective data: two sources could name identical content differently. They move to the Trust DB, where the rest of the subjective metadata already is.
 
-As a bonus, identical content deduplicates even when it was built under different names, for example `hello` and `hello-2.10`. With the name in the path, those are two entries.
+As a bonus, identical content deduplicates even when it was built under different names, for example `hello` and `hello-2.10`. With the name in the path, those are two entries. This happens more than you'd think: fixed-output derivations with the same hash but a different name, or copies of the same source directory with `src = ./.;`.
 
-The drawback is that the store becomes more opaque and requires good tooling for manual management. For example, `nix path-info` could show the names from the Trust DB.
+It also gives a single notion of equivalence: two entries are the same if their content is the same, which makes the Store easier to integrate with other content-addressed systems.
+
+The drawback is that the store becomes more opaque and requires good tooling for manual management. Build logs and error messages only show hashes, which makes debugging harder. To remedy, `nix log` and `nix path-info` can show the names from the Trust DB, see Tooling.
 
 ### Move the Store to `/var/lib/nix`
 
