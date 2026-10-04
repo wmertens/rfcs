@@ -115,6 +115,54 @@ We assume the following process when wanting to realise a given package attribut
 
 Nix already allows a given `$drv^out` to produce different `$cas` entries over time, for example for non-deterministic builds. Each source simply has its own build trace entry.
 
+## Case studies
+
+Here we describe how the Store is used in practice. The details of each mechanism are in the sections that follow.
+
+### Single user on macOS or Linux
+
+- **Setup**: the user owns the Store. There is no daemon.
+- **Adding entries**: Nix moves prepared entries from `.stage` into the Store directly, see "without Store Daemon".
+- **Trust DB**: in the user's home directory, with their own sources.
+- **Garbage collection**: as today, the roots are the user's profiles and auto roots.
+
+Compared to today, there is no store database to keep in sync, so the Store can be copied, backed up or restored like any directory. Switching to multi-user later is only a matter of adding a daemon and changing permissions, see "Adding a Store Daemon".
+
+Note that on macOS, creating `/nix` currently requires a separate APFS volume, mounted via `synthetic.conf`. Moving the Store to `/var/lib/nix` would make that unnecessary, see Incidental improvements.
+
+### Containers
+
+- **Setup**: the host bind-mounts its Store into the containers, including `.stage`. The host's daemon owns the Store.
+- **Adding entries**: a container prepares entries and moves them into `.stage`. The host's daemon notices them, validates them and moves them into the Store.
+- **Trust DB**: each container has its own, for example as part of its image. It doesn't need to trust the host's mappings, nor the other containers'.
+- **Garbage collection**: the host records the roots of its containers, for example by giving each container its own `.gc/hosts/$host` directory.
+
+Compared to today, there is no daemon socket to pass into the container, and the container needs no privileges at all. Today, a container either has its own store baked into its image, or mounts the host store read-only and talks to the host's daemon over its socket to add anything.
+
+Since the Store only holds self-validating entries, a malicious container can't corrupt what the others use. At worst it adds entries that nobody references, and garbage collection removes those.
+
+### Multi-user system
+
+- **Setup**: the daemon owns the Store, and is the only one with write access to it.
+- **Adding entries**: users prepare entries in `.prepare` and move them to `.stage`. The daemon validates them and moves them into the Store, see "with Store Daemon".
+- **Trust DB**: per user. The system has its own Trust DB for the system profiles, maintained by `root`.
+- **Garbage collection**: as today, the roots are the profiles and auto roots of all users.
+
+Compared to today, an untrusted user can add their own substituter or build trace source without affecting anyone else. Today, untrusted users can only use the substituters that an administrator listed in `trusted-substituters`.
+
+Note that users still share the Store itself. If two users trust different sources for the same `$drv^out`, they might get different `$cas` entries, and both are stored. This is on purpose: each user only uses the entries they trust.
+
+### Hosts sharing a network Store
+
+- **Setup**: multiple hosts mount the same Store over the network, for example a CI farm, a lab or a cluster. Each host runs a daemon.
+- **Adding entries**: as for a multi-user system, on each host. Since additions are atomic renames and entries are self-validating, hosts don't need to talk to each other. When two hosts add the same entry, one of them gets an error, but the result is the same.
+- **Trust DB**: per user and per host, as above. Hosts can also share a source, for example the build trace of the CI farm.
+- **Garbage collection**: each host keeps its roots in `.gc/hosts/$host`, and any host can collect, see Garbage collection.
+
+Compared to today, this is new: Nix can't share a writable store between hosts. The local overlay store comes closest, but only shares a read-only lower store.
+
+Note that a build done on one host is immediately available to all the others, without copying. For a CI farm, this means a substitution is just a lookup in the build trace.
+
 ## Nix Store
 
 ### Contents
