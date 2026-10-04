@@ -431,11 +431,53 @@ As Nix already does with `nix store repair`. Since `$cas` entries need no signat
 
 ## Implementation
 
-- Nix needs a store type that reads objective metadata from `$digest.narinfo` instead of SQLite, and keeps the build trace in per-user Trust DBs. It is a new store type next to the existing ones, not a replacement. Nix's local store keeps mixing input-addressed and content-addressed paths as it does today, only this Store holds content-addressed entries exclusively.
-- The Store directory is close to Nix's local binary cache store (`file://`), but with unpacked entries instead of compressed NARs. So most of the store layer code carries over: path calculation, `.narinfo` parsing, verification and substitution.
-- Hosts can switch over one at a time: a host uses either its classic store or the Store, and `nix copy` moves closures between them.
-- Binary caches already serve `.narinfo` files and build trace entries.
-- Build trace entries need to be distributed in an incremental way. For example, as a JSON array of added and changed entries since some timestamp.
+This is a new store type next to the existing ones, not a replacement. Nix's local store keeps mixing input-addressed and content-addressed paths as it does today, only this Store holds content-addressed entries exclusively. Hosts can switch over one at a time: a host uses either its classic store or the Store, and `nix copy` moves closures between them.
+
+Note that the Store could start out holding only closures converted with `nix store make-content-addressed`. However, the Trust DB needs build trace entries, so this RFC depends on content-addressed derivations being usable for Nixpkgs. They don't need to be stable first.
+
+### Already in Nix
+
+- Floating content-addressed derivations, with scratch paths, rewriting and resolution, behind the `ca-derivations` experimental feature.
+- Calculating and verifying content-addressed store paths: `ValidPathInfo::isContentAddressed` recalculates the store path from `CA` and the references, and `checkSignatures` doesn't need signatures for content-addressed paths.
+- Reading and writing `.narinfo` files. The local binary cache store (`file://`) already lays out `.narinfo` files and `build-trace-v2/` entries in a directory. The Store is close to that, but with unpacked entries instead of compressed NARs, so most of the store layer code carries over.
+- The build trace, as the SQLite table `BuildTraceV3` (`drvPath`, `outputName`, `outputPath`, `signatures`). Entries are substituted from binary caches, and their signatures are checked against `trusted-public-keys`.
+- Canonicalising permissions and timestamps.
+- `nix store verify`, `nix store repair`, `nix store optimise`, `nix store make-content-addressed` and `nix copy`.
+- Registering store types (`store-registration.hh`), and loading extra shared libraries with `plugin-files`. So the new store type can be prototyped out of tree, as a plugin.
+- Building is being decoupled from the local store, behind a `BuildingStore` interface. However, registering the outputs still requires a `LocalStore`.
+- The IPC builder protocol (`builder-rpc-v0`), in development.
+- The local overlay store, chroot stores and the read-only local store.
+
+Outside of Nix:
+
+- Hydra can build content-addressed derivations, including early cutoff and dynamic derivations. Its manual still calls this "highly experimental".
+- Nixpkgs has `config.contentAddressedByDefault`, which makes every derivation content-addressed. It is marked as a mass rebuild.
+
+### To write
+
+1. **The store type**: a `LocalFSStore` without SQLite.
+   - An entry is valid when `$cas` and `$digest.narinfo` are present and validate.
+   - `queryPathInfo` reads `$digest.narinfo`, and `queryPathFromHashPart` is a direct lookup.
+   - `addToStore` goes through `.prepare`, `.stage` and `rename`.
+   - Note that garbage collection only needs references, not referrers. Referrers can be calculated on demand and cached locally.
+1. **Building into the Store**: finish decoupling the output registration from `LocalStore`, so local builds can produce entries for the new store type. This follows the direction Nix is already going.
+1. **The Trust DB**: move the build trace out of the store database, into one SQLite DB per user and per source, with an order of precedence. Resolution looks up entries in the user's Trust DBs. This also needs configuration for the sources, the subjective metadata fields and the maintenance rules.
+1. **The Store daemon**: watching `.stage`, with inotify on Linux, FSEvents or kqueue on macOS, and polling as a fallback. It validates, canonicalises, quarantines and adds entries. The optional setuid helper uses the same code.
+1. **Garbage collection for a shared Store**: roots per host, temporary roots, `.gc/trash` with its grace period, and the lock. The existing garbage collection stays for non-shared stores.
+1. **Tooling**: the query tool, names in `nix log` and `nix path-info`, and managing Trust DB sources, see Tooling.
+1. **Small things**:
+   - The `.narinfo` parser has to accept files without `URL`.
+   - A helper that writes `$digest.narinfo` from the Nix store database, for Migration.
+
+### Infrastructure
+
+1. **Nixpkgs built content-addressed, at scale**: today cache.nixos.org only has input-addressed builds. Hydra needs a jobset with `contentAddressedByDefault`, that uploads NARs, `.narinfo` files and build trace entries. Until the switch-over, that is a second copy of the world.
+1. **Distributing build traces**: binary caches already serve build trace entries per key. What's missing is an incremental feed, for example a JSON array of added and changed entries since some timestamp, or a downloadable SQLite file. That way, a Trust DB can be filled without one lookup per derivation. Each source also needs its own signing key.
+1. **Binary caches**: nothing new for the core of this RFC. Moving the Store to `/var/lib/nix` would need yet another set of builds and caches, see Incidental improvements.
+1. **Measurements**: quantify early cutoff and FUSE path masking on a Hydra-sized store, see the TODO list.
+1. **Tests**: NixOS VM tests for each case study, especially multiple hosts and containers sharing a Store over NFS.
+
+Note that this still needs someone to implement it. Prototyping the store type as a plugin lets that start outside of Nix, before anything needs signing off.
 
 ## Alternative options
 
