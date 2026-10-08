@@ -12,11 +12,13 @@ related-issues: (will contain links to implementation PRs)
 
 ## TODO / to explain
 
-- flesh out Trust DB locations and updating/querying/merging multiple
-- query service
-- efficient distribution of build trace entries
+- Trust DB locations, per user and system-wide
+- the protocol for Trust DB sources: lookups, plus an incremental feed of build trace entries, see Infrastructure
+- security considerations: attack scenarios and their mitigations
+- check that Nix accepts an empty name in the digest calculation, see Remove the name from store paths
 - script that migrates an existing `/nix/store` closure to `/var/lib/nix`, see Incidental improvements
 - quantify the savings on a Hydra-sized store, from early cutoff and from FUSE path masking
+- find someone to implement it, see Implementation
 
 ## Summary
 
@@ -538,7 +540,7 @@ As for the contents of `/nix/var`, all of it can go elsewhere:
 
 Nix already supports setting these per store, so this is a change of defaults.
 
-NixPkgs needs to be audited to remove hard-coded `/nix` names, replacing it with the store path variable (TODO look up name).
+NixPkgs needs to be audited to remove hard-coded `/nix` names, replacing it with `builtins.storeDir`.
 
 #### Migration
 
