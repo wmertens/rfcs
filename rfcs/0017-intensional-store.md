@@ -141,7 +141,7 @@ Note that on macOS, creating `/nix` currently requires a separate APFS volume, m
 
 Compared to today, there is no daemon socket to pass into the container, and the container needs no privileges at all. Today, a container either has its own store baked into its image, or mounts the host store read-only and talks to the host's daemon over its socket to add anything.
 
-Since the Store only holds self-validating entries, a malicious container can't corrupt what the others use. At worst it adds entries that nobody references, and garbage collection removes those.
+Since the Store only holds self-validating entries, and the daemon validates a copy of everything a container adds, a malicious container can't corrupt what the others use. At worst it adds entries that nobody references, and garbage collection removes those. Note that this only holds if the container can write to its staging directory and nothing else: not the Store root, and not `.gc`.
 
 ### Multi-user system
 
