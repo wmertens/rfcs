@@ -379,7 +379,7 @@ Any host with write access can then collect garbage:
 1. It atomically moves each listed `$cas` that is not in a closure to `.gc/trash`, together with its `$digest.narinfo`.
 1. It waits for a grace period, for example an hour.
 1. It reads the roots again. Trashed entries that became reachable are moved back, first `$digest.narinfo` and then `$cas`.
-1. It deletes the rest of `.gc/trash`, and removes `$digest.narinfo` files in the Store that are older than the grace period and have no matching `$cas`. Note that when adding, the `$digest.narinfo` appears shortly before `$cas`.
+1. It deletes the rest of `.gc/trash`. It also removes the `$digest.narinfo` files in the Store that have no matching `$cas`, but only if the previous run also saw them without one, and they are not in any temporary roots. Note that when adding, the `$digest.narinfo` appears shortly before `$cas`, and timestamps are always 1, so their age can't be used. Neither can `ctime`: POSIX leaves it to the implementation whether `rename` updates it, and NFS doesn't specify it for the renamed object.
 1. It removes `.gc/lock`.
 
 A host that needs an entry during the grace period can move it back from `.gc/trash` itself, after adding it to its roots.
