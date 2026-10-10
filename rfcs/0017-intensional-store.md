@@ -14,7 +14,6 @@ related-issues: (will contain links to implementation PRs)
 
 - Trust DB locations, per user and system-wide
 - the protocol for Trust DB sources: lookups, plus an incremental feed of build trace entries, see Infrastructure
-- security considerations: attack scenarios and their mitigations
 - check that Nix accepts an empty name in the digest calculation, see Remove the name from store paths
 - script that migrates an existing `/nix/store` closure to `/var/lib/nix`, see Incidental improvements
 - quantify the savings on a Hydra-sized store, from early cutoff and from FUSE path masking
@@ -449,6 +448,74 @@ To begin managing an existing Store with a Store Daemon, these steps are perform
 ### Repairing an entry
 
 As Nix already does with `nix store repair`. Since `$cas` entries need no signature, any cache that has it will do.
+
+## Security considerations
+
+The most important rule: **write access to the Store root equals code execution for every user of the Store.** Everything else follows from keeping that access with the Store owner, and validating everything else before it gets in.
+
+### Who can write what
+
+| Path | Owner | Mode | Notes |
+| --- | --- | --- | --- |
+| Store root | Store owner | 0755, or 0511 when non-listable | the daemon, or the single user |
+| `$cas` entries | Store owner | files 0444 or 0555, directories 0555 | no setuid bits, extended attributes or ACLs |
+| `.incoming` | Store owner | 0711 | |
+| `.incoming/$uid` | user `$uid` | 0700 | the only place a user or container can write |
+| `.daemon`, `.quarantaine`, `.links` | Store owner | 0700 | |
+| `.gc` | Store owner | 0711 | |
+| `.gc/hosts/$host` | that host | 0700, readable by the collector | |
+| `.gc/trash`, `.gc/deleting`, `.gc/lock` | Store owner | 0700 | only the collector |
+
+The Store is best mounted `nosuid,nodev`. Also, before hard-linking a file to `.links`, the daemon checks that the contents of both are equal, not only their size.
+
+Without a Store daemon, every writer has write access to the Store root, so all writers have to trust each other.
+
+On a network filesystem, the identity of a writer has to be trustworthy too. With NFS's default `sec=sys`, root on any client can act as any user, including the Store owner. So either the daemon runs on the file server and clients only get their `.incoming/$uid` and `.gc/hosts/$host` directories, or NFS uses `sec=krb5`, with a principal per host.
+
+### Trust DB
+
+The mechanisms belong to the protocol for Trust DB sources, see the TODO list. These are the requirements:
+
+- Precedence alone works like a union of sources. A lower-priority source that answers first decides the inputs of everything built on top, and from then on the higher-priority source never matches again. Therefore a source can be limited to a scope, for example a flake or a set of derivation names, and a user can require k-of-n signatures, or rebuild instead of falling back to a lower source.
+- Each source has its own keys, and a signature covers the whole entry, including the metadata and the full content address hash.
+- Keys can be revoked, and have validity windows. Since entries are checked against the current trust configuration on every use, removing a key takes effect immediately.
+- An incremental feed proves that it is fresh and complete, for example as a signed append-only log. Otherwise a mirror can withhold entries or revocations without being noticed.
+- Nix never opens a downloaded SQLite file. It imports the signed entries one by one into a DB it created itself.
+- Nix ignores a Trust DB or configuration that isn't owned by the effective user, or that others can write, like ssh's `StrictModes`. `root` only uses the system Trust DB, unless told otherwise. This way, `sudo nix` doesn't pick up the user's sources.
+
+### Hashes
+
+Store path digests are SHA-256 compressed to 160 bits. An attacker who controls both inputs could find a collision with about 2^80 work, which a well-funded attacker can afford. However, the two colliding entries have different full `CA` hashes. Therefore signed build trace entries carry the full `CA` hash, and the `CA` field must match it. Also, two `$digest.narinfo` files with the same digest but a different `CA` prove a collision, so they raise an alarm.
+
+Only SHA-256 is accepted, for `CA` and `NarHash`, with every content addressing method.
+
+### Builds
+
+Builds need a scratch path in the store directory. Sandboxed builds bind-mount a per-build directory in `.incoming/$uid/prepare` onto it. Unsandboxed builds, the default on macOS, can't do that, so the daemon creates the scratch path in the Store directory, owned by the build user. Verification and garbage collection skip it while it is in the build's temporary roots. Alternatively, a shared Store could require sandboxed builds, or the IPC builder protocol.
+
+Nix and the daemon only ever rewrite hash parts, byte by byte. Anything that understands file formats, like unpacking an archive to rewrite it, runs inside the build, with the build's privileges and limits.
+
+### FUSE
+
+When the Store is provided via FUSE (see Incidental improvements):
+
+- The daemon verifies the bytes as served, after putting the masked store paths back. The offset tables are sorted, in bounds, and only refer to entries in `References`.
+- It verifies a whole file on first open, or uses fs-verity, and never serves bytes it didn't verify yet. Note that FUSE passthrough bypasses the daemon, so it only works together with fs-verity.
+- It only fetches on demand when the digest is referenced by an entry that is present or by a root, only from caches that the administrator configured, with rate limits, and never for build users. Otherwise any user can make the daemon download huge entries, hang I/O, or contact internal hosts.
+
+### Names
+
+If names are removed from store paths (see Incidental improvements):
+
+- The names that tools display come from the signed resolved derivation, never from free-text fields in a Trust DB. Tools show which source a name came from, and flag sources that disagree about the same `$cas`.
+- Nix recognises derivations by their `.drv` suffix, so derivations keep it.
+- Security scanners, which today read the name and version from the store path, get them from signed fields in the build trace entry instead.
+
+### Privacy
+
+- `.incoming` and `.gc` aren't listable by others, otherwise they undo the non-listable Store.
+- Looking up an entry at a source tells that source what you are building. Bulk downloads avoid that, and derivations with private inputs are best not looked up at public sources at all.
+- Anyone can check if a known digest is present. As said for the non-listable Store, this is not access control.
 
 ## Implementation
 
