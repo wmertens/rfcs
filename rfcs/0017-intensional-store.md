@@ -457,7 +457,7 @@ The most important rule: **write access to the Store root equals code execution 
 
 | Path | Owner | Mode | Notes |
 | --- | --- | --- | --- |
-| Store root | Store owner | 0755, or 0511 when non-listable | the daemon, or the single user |
+| Store root | Store owner | 0755, or 0711 when non-listable | the daemon, or the single user |
 | `$cas` entries | Store owner | files 0444 or 0555, directories 0555 | no setuid bits, extended attributes or ACLs |
 | `.incoming` | Store owner | 0711 | |
 | `.incoming/$uid` | user `$uid` | 0700 | the only place a user or container can write |
@@ -554,7 +554,7 @@ Outside of Nix:
 1. **Garbage collection for a shared Store**: roots per host, temporary roots, `.gc/trash` with its grace period, and the lock. The existing garbage collection stays for non-shared stores.
 1. **Tooling**: the query tool, names in `nix log` and `nix path-info`, and managing Trust DB sources, see Tooling.
 1. **Small things**:
-   - The `.narinfo` parser has to accept files without `URL`.
+   - A strict `.narinfo` parser for the Store, that accepts files without `URL` and rejects unknown keys.
    - A helper that writes `$digest.narinfo` from the Nix store database, for Migration.
 
 ### Infrastructure
@@ -661,7 +661,7 @@ The drawbacks are the FUSE overhead, limited FUSE support outside Linux, and tha
 
 ### Make the Store non-listable
 
-The Store directory gets mode `dr-x--x--x`, so only its owner can list it. Everybody else can still access entries, but only if they know the path.
+The Store directory gets mode `drwx--x--x` (0711), so only its owner can list it. Everybody else can still access entries, but only if they know the path.
 
 This way, nobody can casually enumerate what is installed on a host, or on a shared Store, what the other hosts have installed. The paths you need come from your own Trust DB and profiles anyway.
 
