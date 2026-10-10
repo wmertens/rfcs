@@ -124,7 +124,7 @@ Here we describe how the Store is used in practice. The details of each mechanis
 ### Single user on macOS or Linux
 
 - **Setup**: the user owns the Store. There is no daemon.
-- **Adding entries**: Nix moves prepared entries from `.stage` into the Store directly, see "without Store Daemon".
+- **Adding entries**: Nix moves prepared entries from the user's staging directory into the Store directly, see "without Store Daemon".
 - **Trust DB**: in the user's home directory, with their own sources.
 - **Garbage collection**: as today, the roots are the user's profiles and auto roots.
 
@@ -134,8 +134,8 @@ Note that on macOS, creating `/nix` currently requires a separate APFS volume, m
 
 ### Containers
 
-- **Setup**: the host bind-mounts its Store into the containers, including `.stage`. The host's daemon owns the Store.
-- **Adding entries**: a container prepares entries and moves them into `.stage`. The host's daemon notices them, validates them and moves them into the Store.
+- **Setup**: the host bind-mounts its Store read-only into the containers, plus each container's own `.incoming/$uid` directory read-write. The host's daemon owns the Store.
+- **Adding entries**: a container prepares entries and moves them into its staging directory. The host's daemon notices them, validates a copy and moves it into the Store.
 - **Trust DB**: each container has its own, for example as part of its image. It doesn't need to trust the host's mappings, nor the other containers'.
 - **Garbage collection**: the host records the roots of its containers, for example by giving each container its own `.gc/hosts/$host` directory.
 
@@ -146,7 +146,7 @@ Since the Store only holds self-validating entries, and the daemon validates a c
 ### Multi-user system
 
 - **Setup**: the daemon owns the Store, and is the only one with write access to it.
-- **Adding entries**: users prepare entries in `.prepare` and move them to `.stage`. The daemon validates them and moves them into the Store, see "with Store Daemon".
+- **Adding entries**: users prepare entries in their own `.incoming/$uid` directory. The daemon validates a copy and moves it into the Store, see "with Store Daemon".
 - **Trust DB**: per user. The system has its own Trust DB for the system profiles, maintained by `root`.
 - **Garbage collection**: as today, the roots are the profiles and auto roots of all users.
 
@@ -177,9 +177,9 @@ Therefore, these are the Store contents, all part of the same mount point to ens
 
 - `$cas`: a self-validating store object. Any path matching the store path format is subject to verification at any time, and is moved to `.quarantaine` if verification fails
 - `$digest.narinfo`: the objective metadata of `$cas`, see Metadata
-- `.prepare`: this directory can be used by anyone to prepare a store object before adding it to the Store, by picking a non-conflicting subpath
-- `.stage`: after preparing, the store object is moved here
-- `.daemon`: if there is a store daemon, it might use this path to prepare additions
+- `.incoming/$uid/prepare`: where user `$uid` prepares store objects before adding them to the Store
+- `.incoming/$uid/stage`: after preparing, the store objects are moved here
+- `.daemon`: if there is a store daemon, its private working directory
 - `.quarantaine`: whenever a non-compliant path is encountered, it is moved here
 - `.links`: used to hard-link identical store files, as Nix already does
 - `.gc`: used for garbage collection, holding the GC roots of each host and the entries being removed
@@ -285,7 +285,7 @@ Since the Nix Store (minus supporting directories) contains only self-validating
 - confidence around hash collision attacks
 - confidence around writers corrupting paths without detection
 
-Adding an entry only involves moving a proposed path from `.prepare` to `.stage`, so no further communication is necessary with the Store daemon.
+Adding an entry only involves moving a prepared path into a staging directory, so no further communication is necessary with the Store daemon.
 
 For single-user installs, the Store can trivially be maintained by the Nix tools, and converting to multi-user is only a matter of changing the permissions.
 
@@ -301,7 +301,7 @@ Optionally, a daemon can maintain the Store. In this case, it is recommended be 
 
 ### Preparing
 
-Nix already builds floating content-addressed outputs and turns them into store objects, see [building]. That process stays as is, except that the result is written to `.prepare` instead of being registered in a database.
+Nix already builds floating content-addressed outputs and turns them into store objects, see [building]. That process stays as is, except that the result is written to `.incoming/$uid/prepare` instead of being registered in a database.
 
 After preparing, Nix writes `$digest.narinfo` next to the entry, and adds the build trace entry and metadata to the user's localhost Trust DB.
 
@@ -315,37 +315,43 @@ Atomicity is important to ensure that `$cas` entries are always valid. If they a
 
 #### with Store Daemon
 
-Any user with write access to `/nix/store/.prepare` and `/nix/store/.stage` can ask for entries to be added. To do so:
+Each user that may add entries has a directory `.incoming/$uid`, owned by that user with mode 0700, containing `prepare` and `stage`. The daemon or the administrator creates it. Since `prepare` and `stage` share a parent, a container only needs that one directory mounted read-write. Note that a rename between two separately mounted directories fails, even on the same filesystem.
 
-1. They prepare entries in `/nix/store/.prepare`, each as `$cas` and `$digest.narinfo`.
-1. They atomically move prepared paths to `/nix/store/.stage`, in reverse dependency order, meaning dependencies of an entry are moved first. First the `$digest.narinfo` file is moved and then the `$cas` entry.
+To add entries, a user:
 
-When the Store daemon discovers a new `$cas` entry under `.stage`:
+1. prepares them in `.incoming/$uid/prepare`, each as `$cas` and `$digest.narinfo`, creating files exclusively and without following symlinks.
+1. atomically moves them to `.incoming/$uid/stage`, in reverse dependency order, meaning dependencies of an entry are moved first. First the `$digest.narinfo` file is moved and then the `$cas` entry.
 
-1. If the Store already contains this `$cas` entry, it removes this new one, perhaps first verifying the Store copy.
-1. It recursively changes ownership of `$cas` and `$digest.narinfo` to itself and timestamps to 1, making sure that write permission is removed for everybody, and read permission is added for anybody.
-   If it has no permissions to do this, it instead copies the path into `/nix/store/.daemon`, and another process will need to keep `.stage` clean.
-1. The daemon verifies the `$cas`. If it doesn't match, it removes `$cas` and `$digest.narinfo`. Note that a missing or altered `$digest.narinfo` file won't pass validation.
-1. It checks that all references are already present in the Store. If not, the path is held for a while and deleted if the references don't appear in time (configurable).
-1. It atomically moves `$digest.narinfo` into `/nix/store`.
-1. It atomically moves `$cas` into `/nix/store`.
+When the Store daemon discovers a new `$cas` entry in a `stage` directory:
 
-Note that to ensure atomicity, `.prepare` and `.stage` need to be on the same filesystem, and either `.stage` or `.daemon` need to be on the same filesystem as the Store.
+1. It claims the entry by atomically moving it, together with its `$digest.narinfo`, into `.daemon/$run`, which only the daemon can access. From here on, the user can't swap the entry for another one.
+1. If the Store already contains this `$cas`, it deletes the claimed entry and stops.
+1. It reads the entry without following symlinks, accepting only regular files, directories and symlinks, and writes a fresh copy that it owns: files 0444 or 0555, directories 0555, timestamps 1, no extended attributes, ACLs, setuid bits or hard links. Reflinks keep the copy cheap where the filesystem supports them. This is what the Nix daemon effectively does today when a client sends it a NAR.
+1. It validates the copy as described in In-band metadata, and writes its own `$digest.narinfo` from what it calculated, only taking `CA` and `References` from the user's file. If the copy doesn't validate, it is deleted.
+1. It checks that all references are already present in the Store, and adds the entry and its references to its temporary roots. If a reference is missing, the entry is held for a while, and deleted if the reference doesn't appear in time (configurable).
+1. It atomically moves `$digest.narinfo` into the Store, and then `$cas`, without replacing existing files.
+1. It deletes the claimed original.
 
-The daemon discovers new entries by watching `.stage`, so no communication is needed. This works from containers and from other hosts, and watching is cheap with inotify on the file server. Where inotify doesn't work, for example on an NFS client, the daemon polls instead.
+Note that the daemon never adopts the user's files in place, for example by changing their owner. That isn't safe: the user may still hold an open file descriptor and write through it after validation, swap a directory for a symlink while the daemon walks it, or hard-link somebody else's file into the entry. Also, on macOS a `chown` by root keeps setuid bits, while Linux clears them.
 
-Optionally, the same code is available as a helper that a user calls to process their prepared entry right away, for example as a setuid executable. This is just a fast path; without it, the daemon picks up the entry anyway.
+To keep a bad entry from taking down the daemon, it stops reading an entry beyond its `NarSize`, limits the depth and the number of files, walks the entry without recursion, and limits the pending entries and bytes per user. An entry that crashed the daemon is rejected after a restart instead of retried. Deleting anything a user supplied also happens without following symlinks.
+
+Note that to ensure atomicity, `.incoming` and `.daemon` need to be on the same filesystem as the Store.
+
+The daemon discovers new entries by watching the `stage` directories, so no communication is needed. This works from containers and from other hosts, and watching is cheap with inotify on the file server. Where inotify doesn't work, for example on an NFS client, the daemon polls instead.
+
+A user who doesn't want to wait for the next poll can touch a trigger file in `.incoming/$uid`, which the daemon watches. There is no setuid helper: it would bring all the classic setuid problems, for a speed-up that watching already gives.
 
 #### without Store Daemon
 
-Any user with write access to `/nix/store/.stage` and `/nix/store` can add entries. To do so:
+Any user with write access to `/nix/store` can add entries. To do so:
 
-1. They prepare entries in `/nix/store/.stage`, each as `$cas` and `$digest.narinfo`.
-1. They atomically move prepared entries to `/nix/store`, in reverse dependency order, meaning dependencies of an entry are moved first, and `$digest.narinfo` is moved before `$cas`
+1. They prepare entries in `.incoming/$uid/stage`, each as `$cas` and `$digest.narinfo`.
+1. They atomically move prepared entries to `/nix/store`, in reverse dependency order, meaning dependencies of an entry are moved first, and `$digest.narinfo` is moved before `$cas`. Neither may replace an existing file, for example by using `renameat2` with `RENAME_NOREPLACE`.
 
-Note that to ensure atomicity, `.stage` needs to be on the same filesystem as the Store.
+Note that to ensure atomicity, `.incoming` needs to be on the same filesystem as the Store.
 
-Note that when two writers are trying to add the same `$cas` or `$digest.narinfo`, one of them might get an error, but the end result will be the same (as long as the `$cas` is self-valid). So multiple writers can also be on separate hosts, in a trusted setting.
+Note that when two writers are trying to add the same `$cas` or `$digest.narinfo`, one of them gets an error, but the end result will be the same (as long as the `$cas` is self-valid). So multiple writers can also be on separate hosts, in a trusted setting. Note that every writer can put anything in the Store, so they all have to trust each other, see Security considerations.
 
 ### Verification
 
@@ -422,7 +428,7 @@ This process will fail if the store object refers to the Store in ways that aren
 To begin managing an existing Store with a Store Daemon, these steps are performed:
 
 - Change permissions on the Store root so only the daemon has write access.
-- Ensure `.prepare`, `.stage` and `.quarantaine` with desired permissions.
+- Ensure `.incoming`, `.daemon` and `.quarantaine` with the permissions from Security considerations, and a `.incoming/$uid` directory for each user that may add entries.
 - For each Store entry
   - Recursively adjust permissions and timestamps
   - Verify entry
@@ -467,11 +473,11 @@ Outside of Nix:
 1. **The store type**: a `LocalFSStore` without SQLite.
    - An entry is valid when `$cas` and `$digest.narinfo` are present and validate.
    - `queryPathInfo` reads `$digest.narinfo`, and `queryPathFromHashPart` is a direct lookup.
-   - `addToStore` goes through `.prepare`, `.stage` and `rename`.
+   - `addToStore` goes through `.incoming/$uid` and `rename`.
    - Note that garbage collection only needs references, not referrers. Referrers can be calculated on demand and cached locally.
 1. **Building into the Store**: finish decoupling the output registration from `LocalStore`, so local builds can produce entries for the new store type. This follows the direction Nix is already going.
 1. **The Trust DB**: move the build trace out of the store database, into one SQLite DB per user and per source, with an order of precedence. Resolution looks up entries in the user's Trust DBs. This also needs configuration for the sources, the subjective metadata fields and the maintenance rules.
-1. **The Store daemon**: watching `.stage`, with inotify on Linux, FSEvents or kqueue on macOS, and polling as a fallback. It validates, canonicalises, quarantines and adds entries. The optional setuid helper uses the same code.
+1. **The Store daemon**: watching the `stage` directories, with inotify on Linux, FSEvents or kqueue on macOS, and polling as a fallback. It claims, copies, validates, quarantines and adds entries.
 1. **Garbage collection for a shared Store**: roots per host, temporary roots, `.gc/trash` with its grace period, and the lock. The existing garbage collection stays for non-shared stores.
 1. **Tooling**: the query tool, names in `nix log` and `nix path-info`, and managing Trust DB sources, see Tooling.
 1. **Small things**:
