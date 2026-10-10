@@ -184,7 +184,7 @@ Therefore, these are the Store contents, all part of the same mount point to ens
 - `.gc`: used for garbage collection, holding the GC roots of each host and the entries being removed
 - anything else doesn't belong in the Store and should be removed
 
-The timestamps of files/directories are kept at 1, as Nix does, and the user and group ownership are recommended to be a single user, for example `root:root` or `store:store`.
+The timestamps of the files and directories in `$cas` entries are kept at 1, as Nix does, with `$digest.narinfo` as the only exception, see In-band metadata. The user and group ownership are recommended to be a single user, for example `root:root` or `store:store`.
 Note that for a shared store, two systems might see different ownership values; this is acceptable.
 
 ### Metadata
@@ -244,6 +244,8 @@ Note that this makes the Store directory look a lot like a binary cache, minus t
 The format is simple `Key: Value` lines, so shell tools can read it too. The new store type parses it strictly: exactly the fields above, each once, and nothing else. Other objective metadata, such as late binding information, can only be added later if it is covered by the digest or can be recalculated from the contents. This is to be determined. Note that Nix's parser currently requires `URL`, so the new store type has to parse these files without it.
 
 When adding an entry, `$digest.narinfo` is moved into the Store before `$cas`, so a present `$cas` always has its metadata. Garbage collection removes leftover `$digest.narinfo` files.
+
+Unlike the entries, `$digest.narinfo` keeps a real modification time: the moment it was written, just before it was moved into the Store. Since `rename` doesn't change it, it tells when the entry was added, like `registrationTime` in Nix's database. Validation doesn't look at it, so it can't make an entry invalid. It is only used for garbage collection and tooling, never for security decisions: without a daemon, a writer can set any time on its own `$digest.narinfo`. Note that copying a Store without keeping timestamps makes all entries look new, which only means that garbage collection keeps them longer.
 
 ### Trust DB
 
@@ -385,10 +387,12 @@ Any host with write access can then collect garbage:
 1. It creates `.gc/lock` with `mkdir`, which is atomic, also on NFS. If the lock already exists and is recent (for example less than a day old), another collector is running and it stops. The age is judged by the file server's clock, by comparing with a file it just touched on the same filesystem, never by the local clock. A lock with a timestamp in the future counts as stale. A stale lock is taken over by renaming it, not by deleting and recreating it.
 1. It lists the Store entries.
 1. It reads the roots of all hosts and calculates their closures, using the references in `$digest.narinfo`.
-1. It atomically moves each listed `$cas` that is not in a closure to `.gc/trash/$run`, together with its `$digest.narinfo`.
+1. It atomically moves each listed `$cas` that is not in a closure, and whose `$digest.narinfo` is older than the grace period, to `.gc/trash/$run`, together with its `$digest.narinfo`. Skipping recently added entries protects a host that is about to record its roots.
 1. It waits for a grace period, for example an hour. On NFS, the grace period has to be much longer than the attribute cache timeout, so that the next step sees all fresh roots.
 1. It reads the roots again. Trashed entries that became reachable are validated again and moved back, first `$digest.narinfo` and then `$cas`.
-1. It moves the rest of `.gc/trash/$run` to `.gc/deleting/$run`, and deletes that. This way, a concurrent move back either wins cleanly, or fails cleanly. It also removes the `$digest.narinfo` files in the Store that have no matching `$cas`, but only if the previous run also saw them without one, and they are not in any temporary roots. Note that when adding, the `$digest.narinfo` appears shortly before `$cas`, and timestamps are always 1, so their age can't be used. Neither can `ctime`: POSIX leaves it to the implementation whether `rename` updates it, and NFS doesn't specify it for the renamed object.
+1. It moves the rest of `.gc/trash/$run` to `.gc/deleting/$run`, and deletes that. This way, a concurrent move back either wins cleanly, or fails cleanly. It also removes the `$digest.narinfo` files in the Store that have no matching `$cas` and are older than the grace period. Note that when adding, the `$digest.narinfo` appears shortly before `$cas`, but it is fresh, so it is never removed. As for the lock, ages are judged by the file server's clock.
+
+The added time also allows policies by age, for example keeping unrooted entries for a week before collecting them.
 1. It removes `.gc/lock`.
 
 A host that needs an entry during the grace period adds it to its roots, and asks the collector to move it back, or fetches it again. Only the collector writes to `trash` and `deleting`.
@@ -414,7 +418,7 @@ For a shared store, the GC roots of each host are recorded as described in Garba
 Without a store database, querying happens through the Trust DBs. Listing the Store was always a hack to query it, so the tools need to make this smooth:
 
 - A query tool, for example `nix show tool`, lists the known entries matching a name or description from the Trust DBs, with their metadata, and highlights the ones present in the Store. Unlike `nix search`, which searches expressions, this searches what was built or is known to a source.
-- `nix path-info` and `nix log` show the names from the Trust DB next to store paths.
+- `nix path-info` and `nix log` show the names from the Trust DB next to store paths. `nix path-info` also shows when an entry was added, from its `$digest.narinfo`.
 - Each user can add, remove and order the sources of their Trust DB.
 - `nix store verify`, `nix store repair` and garbage collection work on the Store as described above.
 
