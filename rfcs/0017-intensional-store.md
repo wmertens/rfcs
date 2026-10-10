@@ -231,11 +231,18 @@ Therefore, every entry comes with a file `/nix/store/$digest.narinfo`, in the `.
 
 Other fields, like `Deriver` and `Sig`, are subjective and belong in the Trust DB. `URL`, `Compression`, `FileHash` and `FileSize` describe a binary cache download and don't apply.
 
-The file validates itself: the store path is calculated from `CA`, `References`, the store directory and the name, and must equal `StorePath`. If the file is missing or altered, the `$cas` won't validate.
+An entry is valid when all of these hold:
+
+- the file is named after the digest of `StorePath`, and `StorePath` uses the local store directory
+- the store path calculated from `CA`, `References`, the store directory and the name equals `StorePath`
+- the content address recalculated from the entry's contents equals `CA`, with self-references masked the way Nix does when adding a path
+- `NarHash` and `NarSize` match the entry's contents
+
+Note that the store path only covers `CA`, `References` and the name. `NarHash` and `NarSize` are not part of it, so they are always recalculated, never trusted. If the file is missing or any field is altered, the `$cas` won't validate.
 
 Note that this makes the Store directory look a lot like a binary cache, minus the compression. This is on purpose.
 
-The format is simple `Key: Value` lines, so shell tools can read it too. Nix's parser ignores keys it doesn't know, so other objective metadata, such as late binding information, can be added as extra fields later. This is to be determined. Note that Nix's parser currently requires `URL`, so the new store type has to parse these files without it.
+The format is simple `Key: Value` lines, so shell tools can read it too. The new store type parses it strictly: exactly the fields above, each once, and nothing else. Other objective metadata, such as late binding information, can only be added later if it is covered by the digest or can be recalculated from the contents. This is to be determined. Note that Nix's parser currently requires `URL`, so the new store type has to parse these files without it.
 
 When adding an entry, `$digest.narinfo` is moved into the Store before `$cas`, so a present `$cas` always has its metadata. Garbage collection removes leftover `$digest.narinfo` files.
 
@@ -342,7 +349,7 @@ Note that when two writers are trying to add the same `$cas` or `$digest.narinfo
 
 ### Verification
 
-A path in the Store is verified like `nix store verify` does for content-addressed paths, but using `$digest.narinfo` instead of the database. If it doesn't match, the path is moved to `/nix/store/.quarantaine`, where a sysadmin has to investigate.
+A path in the Store is verified by checking `$digest.narinfo` and the contents as described in In-band metadata. Note that this is more than `nix store verify` does today: it checks the contents against `NarHash` from the database, and only checks `CA` against the store path. That is fine when Nix wrote the database itself, but here anybody adding an entry writes its `$digest.narinfo`. If it doesn't match, the path is moved to `/nix/store/.quarantaine`, where a sysadmin has to investigate.
 
 Any process with write access to `/nix/store` and `/nix/store/.quarantaine` can do this, for example the Store daemon.
 
@@ -440,7 +447,7 @@ Note that the Store could start out holding only closures converted with `nix st
 ### Already in Nix
 
 - Floating content-addressed derivations, with scratch paths, rewriting and resolution, behind the `ca-derivations` experimental feature.
-- Calculating and verifying content-addressed store paths: `ValidPathInfo::isContentAddressed` recalculates the store path from `CA` and the references, and `checkSignatures` doesn't need signatures for content-addressed paths.
+- Calculating and verifying content-addressed store paths: `ValidPathInfo::isContentAddressed` recalculates the store path from `CA` and the references, and `checkSignatures` doesn't need signatures for content-addressed paths. Recalculating `CA` from the contents happens when adding a path (`LocalStore::addToStore`), not in `nix store verify`.
 - Reading and writing `.narinfo` files. The local binary cache store (`file://`) already lays out `.narinfo` files and `build-trace-v2/` entries in a directory. The Store is close to that, but with unpacked entries instead of compressed NARs, so most of the store layer code carries over.
 - The build trace, as the SQLite table `BuildTraceV3` (`drvPath`, `outputName`, `outputPath`, `signatures`). Entries are substituted from binary caches, and their signatures are checked against `trusted-public-keys`.
 - Canonicalising permissions and timestamps.
