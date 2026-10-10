@@ -264,7 +264,7 @@ With this information, a user can quickly find `$cas` entries to realise that ma
 
 Note that the build-time dependencies don't need storing: `$drv` is resolved, so it already lists its inputs as store paths.
 
-Nix currently keeps the build trace in the store database, per store. Here we keep it per user and per source instead. For a given `$drv^out`, there can be many entries, one for each trusted source. This can be handled by having one SQLite DB per source (including localhost), and having an order of precedence.
+Nix currently keeps the build trace in the store database, per store. Here we keep it per user and per source instead. For a given `$drv^out`, there can be many entries, one for each trusted source. This can be handled by having one SQLite DB per source (including localhost), and having an order of precedence. Each entry keeps the key and signature it came with, and is checked against the current trust configuration whenever it is used. The localhost DB is per user, and only holds what that user built.
 
 A source can be a service that answers lookups, like a binary cache serving build trace entries, or a static mapping, like a downloaded SQLite file.
 
@@ -303,9 +303,9 @@ Optionally, a daemon can maintain the Store. In this case, it is recommended be 
 
 Nix already builds floating content-addressed outputs and turns them into store objects, see [building]. That process stays as is, except that the result is written to `.prepare` instead of being registered in a database.
 
-After preparing, Nix writes `$digest.narinfo` next to the entry, and adds the build trace entry and metadata to the user's Trust DB.
+After preparing, Nix writes `$digest.narinfo` next to the entry, and adds the build trace entry and metadata to the user's localhost Trust DB.
 
-Store objects can also come from elsewhere, for example `nix store add` or a substitution. They follow the same steps.
+Store objects can also come from elsewhere, for example `nix store add` or a substitution. They follow the same steps, except that a substituted build trace entry stays in the DB of the source it came from. It is never copied into the localhost DB, so it keeps its signature, and removing the source or its key removes the entry too.
 
 ### Adding entries
 
