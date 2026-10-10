@@ -367,9 +367,13 @@ Garbage collection needs to identify store paths that are not used by anything o
 
 - `hosts/$host/roots/`: the root `$cas` entries of `$host`, as 0-length files named `$cas`. The host updates them whenever its roots change, for example after switching or pruning a profile.
 - `hosts/$host/temp/$build/`: the temporary roots of a running build or substitution on `$host`, in the same format.
+- `hosts/$host/temp/runtime/`: the entries that running processes on `$host` use, refreshed well within the grace period.
 - `hosts/$host/alive`: touched by the host periodically, for example every hour.
-- `trash/`: entries that are being removed.
-- `lock`: held by a running collector, containing a timestamp.
+- `trash/$run/`: entries that a collector run is removing.
+- `deleting/$run/`: entries that a collector run is deleting right now.
+- `lock`: a directory, held by a running collector.
+
+Each `hosts/$host` directory is writable only by that host, so no host can delete or forge another host's roots. The collector may read them all. Containers don't get a `hosts` directory of their own, the host daemon writes their roots for them.
 
 Each host follows these rules:
 
@@ -379,16 +383,18 @@ Each host follows these rules:
 
 Any host with write access can then collect garbage:
 
-1. It creates `.gc/lock`. If the lock already exists and is recent (for example less than a day old), another collector is running and it stops.
+1. It creates `.gc/lock` with `mkdir`, which is atomic, also on NFS. If the lock already exists and is recent (for example less than a day old), another collector is running and it stops. The age is judged by the file server's clock, by comparing with a file it just touched on the same filesystem, never by the local clock. A lock with a timestamp in the future counts as stale. A stale lock is taken over by renaming it, not by deleting and recreating it.
 1. It lists the Store entries.
 1. It reads the roots of all hosts and calculates their closures, using the references in `$digest.narinfo`.
-1. It atomically moves each listed `$cas` that is not in a closure to `.gc/trash`, together with its `$digest.narinfo`.
-1. It waits for a grace period, for example an hour.
-1. It reads the roots again. Trashed entries that became reachable are moved back, first `$digest.narinfo` and then `$cas`.
-1. It deletes the rest of `.gc/trash`. It also removes the `$digest.narinfo` files in the Store that have no matching `$cas`, but only if the previous run also saw them without one, and they are not in any temporary roots. Note that when adding, the `$digest.narinfo` appears shortly before `$cas`, and timestamps are always 1, so their age can't be used. Neither can `ctime`: POSIX leaves it to the implementation whether `rename` updates it, and NFS doesn't specify it for the renamed object.
+1. It atomically moves each listed `$cas` that is not in a closure to `.gc/trash/$run`, together with its `$digest.narinfo`.
+1. It waits for a grace period, for example an hour. On NFS, the grace period has to be much longer than the attribute cache timeout, so that the next step sees all fresh roots.
+1. It reads the roots again. Trashed entries that became reachable are validated again and moved back, first `$digest.narinfo` and then `$cas`.
+1. It moves the rest of `.gc/trash/$run` to `.gc/deleting/$run`, and deletes that. This way, a concurrent move back either wins cleanly, or fails cleanly. It also removes the `$digest.narinfo` files in the Store that have no matching `$cas`, but only if the previous run also saw them without one, and they are not in any temporary roots. Note that when adding, the `$digest.narinfo` appears shortly before `$cas`, and timestamps are always 1, so their age can't be used. Neither can `ctime`: POSIX leaves it to the implementation whether `rename` updates it, and NFS doesn't specify it for the renamed object.
 1. It removes `.gc/lock`.
 
-A host that needs an entry during the grace period can move it back from `.gc/trash` itself, after adding it to its roots.
+A host that needs an entry during the grace period adds it to its roots, and asks the collector to move it back, or fetches it again. Only the collector writes to `trash` and `deleting`.
+
+Note that runtime roots matter more on a shared Store. One host's collector can't see the processes of another host, and over NFS, deleting a file that is in use on another host breaks that process. Therefore each host publishes what its running processes use in `temp/runtime`, like Nix finds runtime roots today.
 
 A host whose `alive` file is older than a configurable time, for example a week, is considered gone, and its directory is removed. When it comes back, it records its roots again and fetches any missing entries. Note that a host that can't reach the Store can't add entries either, so a network split only delays collection.
 
